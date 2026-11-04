@@ -16,13 +16,19 @@ import kotlin.math.sin
  * Draws into the wallpaper surface with a translucent backing. All calls must be
  * made on the wallpaper's main thread; camera bitmaps are handed over through the
  * engine after posting to that thread.
+ *
+ * Every draw is a full-surface software composite, so it is the most expensive
+ * thing the wallpaper does on the main thread. Draws return their duration so the
+ * service can log real numbers instead of guessing at jank.
  */
 class HazardOverlayRenderer(
     private val settings: AssistSettings,
     private val density: Float,
 ) {
 
-    private val previewPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
+    // Dithering is deliberately off: it costs a per-pixel rounding pass on the
+    // scaled preview and is invisible behind the translucent overlay.
+    private val previewPaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         color = BORDER_COLOR
@@ -63,33 +69,38 @@ class HazardOverlayRenderer(
         draw()
     }
 
-    fun onFrame(bitmap: Bitmap, rotation: Int) {
+    /** Takes ownership of [bitmap]: it is drawn once and recycled when replaced. */
+    fun onFrame(bitmap: Bitmap, rotation: Int): Long {
         if (holder == null) {
             bitmap.recycle()
-            return
+            return 0L
         }
         val previous = preview
         preview = bitmap
         rotationDegrees = rotation
         previous?.recycle()
-        draw()
+        return draw()
     }
 
-    fun onHazard(nowMs: Long, showVisualAlert: Boolean) {
+    fun onHazard(nowMs: Long, showVisualAlert: Boolean): Long {
         hazardUntilMs = nowMs + HAZARD_HOLD_MS
         visualAlertEnabled = showVisualAlert
-        draw(nowMs)
+        return draw(nowMs)
     }
 
     fun isActive(nowMs: Long): Boolean = nowMs < hazardUntilMs
 
-    fun draw(nowMs: Long = SystemClock.uptimeMillis()) {
-        val surfaceHolder = holder ?: return
+    /** Draws one frame and returns how long the composite took, in milliseconds. */
+    fun draw(nowMs: Long = SystemClock.elapsedRealtime()): Long {
+        val surfaceHolder = holder ?: return 0L
+        if (!surfaceHolder.surface.isValid) return 0L
+
+        val startedAt = SystemClock.elapsedRealtime()
         val canvas = try {
             surfaceHolder.lockCanvas()
         } catch (throwable: Throwable) {
             null
-        } ?: return
+        } ?: return 0L
 
         try {
             canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
@@ -100,6 +111,7 @@ class HazardOverlayRenderer(
         } finally {
             runCatching { surfaceHolder.unlockCanvasAndPost(canvas) }
         }
+        return SystemClock.elapsedRealtime() - startedAt
     }
 
     private fun drawPreview(canvas: Canvas, bitmap: Bitmap) {
