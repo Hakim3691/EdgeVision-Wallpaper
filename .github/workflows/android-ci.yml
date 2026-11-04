@@ -162,11 +162,16 @@ jobs:
             fi
           fi
 
-      - name: Upload APKs
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: edgevision-arm64-apks
+          name: app-arm64-v8a-debug.apk
           if-no-files-found: error
-          path: |
-            app/build/outputs/apk/debug/app-arm64-v8a-debug.apk
-            app/build/outputs/apk/release/app-arm64-v8a-release.apk
+          path: app/build/outputs/apk/debug/app-arm64-v8a-debug.apk
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-arm64-v8a-release.apk
+          if-no-files-found: error
+          path: app/build/outputs/apk/release/app-arm64-v8a-release.apk
