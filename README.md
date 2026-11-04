@@ -39,11 +39,14 @@ Key files:
 | --- | --- |
 | `wallpaper/CameraWallpaperService.kt` | `WallpaperService` engine, surface and pipeline wiring |
 | `wallpaper/WallpaperEngineController.kt` | Android-free visibility/surface state machine |
-| `wallpaper/HazardOverlayRenderer.kt` | Transparent preview and pulsing alert border |
+| `wallpaper/HazardOverlayRenderer.kt` | Transparent preview, pulsing alert border and status notice |
 | `wallpaper/RenderMailbox.kt` | Single-slot frame handover: newest frame wins, memory stays flat |
 | `camera/CameraRecoveryPolicy.kt` | Bounded exponential reopen after a camera disconnect |
+| `camera/CameraAccess.kt` | Ready / permission-missing / no-hardware camera state |
+| `camera/CameraPermissionWaitPolicy.kt` | Bounded polling while the user has not granted camera access |
 | `camera/FrameGeometry.kt` | Display-to-sensor mapping so detection is upright and full field |
 | `diagnostics/RuntimeMetrics.kt` | Windowed fps, draw cost, inference latency and drop counters |
+| `diagnostics/LoadPolicy.kt` | Thermal and battery-saver aware conversion cadence |
 | `camera/CameraController.kt` | Camera2 session, 720p/30 fps cap, synchronous release |
 | `camera/YuvFrameConverter.kt` | YUV to preview bitmap + upright full-field 320x320 RGB |
 | `inference/HazardInferenceEngine.kt` | Python worker, frame dropping, pause/release |
@@ -67,6 +70,13 @@ The camera stream is capped at 1280x720. Frame conversion is throttled to ~15 fp
 and inference drops frames while the single worker is busy, so thermal load stays
 bounded.
 
+Conversion cadence also adapts to the device. `diagnostics/LoadPolicy.kt` maps the
+`PowerManager` thermal status and battery-saver state to a frame interval: 66 ms
+when cool, 150 ms at `MODERATE`, 250 ms at `SEVERE`, 500 ms at `CRITICAL`, and at
+least 100 ms in battery saver, with the slower constraint winning when both apply.
+Detection is never disabled — a late alert is still useful, a missing one is not —
+and the applied profile is logged whenever it changes.
+
 Preview frames cross to the main thread through `RenderMailbox`, which holds at
 most one frame: a draw that overruns the capture cadence supersedes the waiting
 frame instead of queueing it. That bound is what keeps the preview live and keeps
@@ -80,6 +90,14 @@ doubles up to 8 s, for six attempts, and resets on success or when the wallpaper
 is hidden. While the wallpaper is visible the engine logs one metrics line every
 five seconds with frames per second, draw cost, inference latency, dropped frames
 and hazard count.
+
+A missing camera permission used to leave an empty home screen with one log line.
+The engine now draws a notice on the wallpaper telling the user to open Edge Vision
+and allow camera access, and keeps checking while the wallpaper stays visible
+(`CameraPermissionWaitPolicy`: 500 ms doubling to an 8 s heartbeat, 120 checks).
+Granting the permission from the settings screen therefore starts the camera
+without the user having to reset the wallpaper. A device that reports no camera at
+all shows its own notice and stops retrying.
 
 ### Hazard behavior
 
@@ -154,8 +172,16 @@ export EDGEVISION_RELEASE_KEY_PASSWORD=...
 bash ./gradlew :app:assembleRelease
 ```
 
-Artifact: `app/build/outputs/apk/release/app-arm64-v8a-release.apk`. Without the
-environment variables, a local release build falls back to the Android debug key.
+Artifact: `app/build/outputs/apk/release/app-arm64-v8a-release.apk`.
+
+`assembleRelease` fails with an actionable message when no release keystore is
+configured. A "release" APK signed with the debug key installs fine but no store
+build can ever upgrade it, so it is no longer produced by accident. To build one
+locally with the debug key anyway, opt in explicitly:
+
+```bash
+bash ./gradlew :app:assembleRelease -PallowDebugReleaseSigning=true
+```
 
 ### Tests
 
@@ -187,6 +213,8 @@ inside `testDebugUnitTest`, so CI gates every push on them:
 | `HazardDetectionSpec` | Hazards alert at a useful distance without false alarms |
 | `WallpaperLifecycleSpec` | Covering the home screen releases camera and inference |
 | `DetectionContractSpec` | The Python/Kotlin detection JSON contract |
+| `CameraAccessSpec` | A missing camera permission shows a notice instead of a blank wallpaper |
+| `AdaptiveLoadSpec` | Heat and battery saver slow conversion without silencing detection |
 
 Write the spec for a new behaviour first, then the implementation; a failing step
 reports as `Then <step> failed: <assertion>`.
@@ -215,15 +243,16 @@ manual dispatch:
 2. JVM unit tests plus Espresso-on-Robolectric UI tests.
 3. Instrumented Espresso tests on an API 34 x86_64 emulator.
 4. Signed debug and release arm64 builds, the 40 MiB size gate, and publishing of
-   both APKs as assets on the rolling `ci-latest` release.
+   both APKs as assets on a versioned release plus the rolling `ci-latest` release.
 
 Download the CI-built APKs from
-<https://github.com/Hakim3691/EdgeVision-Wallpaper/releases/tag/ci-latest>: the
-assets are named `app-arm64-v8a-debug.apk` and `app-arm64-v8a-release.apk` and are
-replaced on every successful `main` build. APKs are published as release assets
-rather than Actions artifacts because Actions artifact storage is a small
-account-wide quota shared with every other repository on the account; release
-assets use repository storage and are not subject to it.
+<https://github.com/Hakim3691/EdgeVision-Wallpaper/releases>: every successful
+`main` build refreshes `ci-latest` and the release named after `versionName` (for
+example `v1.1.0`). The assets are named `app-arm64-v8a-debug.apk` and
+`app-arm64-v8a-release.apk`. APKs are published as release assets rather than
+Actions artifacts because Actions artifact storage is a small account-wide quota
+shared with every other repository on the account; release assets use repository
+storage and are not subject to it.
 
 Every Gradle job runs `bash tools/bootstrap.sh` before invoking the wrapper, so
 CI uses the same pinned model and wrapper checksums as a local build.
@@ -305,10 +334,14 @@ bash scripts/check_apk_size.sh app/build/outputs/apk/release/app-arm64-v8a-relea
   components. A `WallpaperService` usually remains bound while the launcher is
   visible, but some OEM builds may still deny camera access. A disconnect or denial
   is retried with bounded backoff (six attempts, 400 ms doubling to 8 s) and logged;
-  if the OEM blocks camera access entirely, the wallpaper stays transparent rather
-  than crashing. A foreground-service/notification workaround is not implemented
-  because it adds a persistent notification and restricted background-start
-  behavior; validate on your target devices.
+  if the OEM blocks camera access entirely, the wallpaper shows a permission notice
+  instead of a blank screen, and never crashes. A
+  foreground-service/notification workaround is not implemented because it adds a
+  persistent notification and restricted background-start behavior; validate on
+  your target devices.
+- Thermal throttling is only *reduced*, not eliminated: the pipeline lowers the
+  preview cadence under heat but keeps running inference, so a phone that is already
+  too hot still throttles the whole app.
 - The COCO model has no bespoke `pole` class. Pole-like hazards come from the
   mapped street-fixture classes above; custom classes require retraining.
 - Detection is throttled and frame-dropping by design. Alerts are advisory and may
