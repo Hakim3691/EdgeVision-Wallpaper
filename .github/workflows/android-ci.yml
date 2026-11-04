@@ -166,9 +166,9 @@ jobs:
           fi
 
       # APK delivery uses GitHub Release assets rather than Actions artifacts.
-      # Actions artifact storage is a small account-wide quota that other
+      # Action artifact storage is a small account-wide quota that other
       # repositories in this account routinely exhaust, which blocked this
-      # job's uploads. Release assets use repository storage with their own
+      # job's uploads. Release assets are repository storage with their own
       # limits, so publishing here is independent of that quota. Asset names
       # stay exactly app-arm64-v8a-debug.apk and app-arm64-v8a-release.apk.
       - name: Publish APKs to the rolling CI release
@@ -199,5 +199,28 @@ jobs:
           # assets are app-arm64-v8a-debug.apk and app-arm64-v8a-release.apk.
           gh release upload "$RELEASE_TAG" "$DEBUG_APK" "$RELEASE_APK" --clobber
 
-          gh release view "$RELEASE_TAG" --json assets \
-            --jq '.assets[] | "\(.name)\t\(.size) bytes"'
+          # Keep the rolling release attached to the commit that produced it,
+          # otherwise the Releases page still points at the first build.
+          gh release edit "$RELEASE_TAG" --target "$COMMIT_SHA"
+
+          # Also publish a versioned release, so finished work produces a
+          # discoverable release entry with both APKs attached instead of only
+          # a single rolling tag. The tag follows versionName in
+          # app/build.gradle.kts: bump it to cut a new release.
+          VERSION_NAME="$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)"
+          VERSION_TAG="v${VERSION_NAME}"
+          if gh release view "$VERSION_TAG" >/dev/null 2>&1; then
+            echo "Updating existing release $VERSION_TAG"
+          else
+            gh release create "$VERSION_TAG" \
+              --title "Edge Vision v${VERSION_NAME}" \
+              --notes "Signed arm64-v8a APKs built from ${COMMIT_SHA} by workflow run ${GITHUB_RUN_NUMBER}." \
+              --target "$COMMIT_SHA"
+          fi
+          gh release upload "$VERSION_TAG" "$DEBUG_APK" "$RELEASE_APK" --clobber
+
+          for TAG in "$RELEASE_TAG" "$VERSION_TAG"; do
+            echo "--- $TAG"
+            gh release view "$TAG" --json assets \
+              --jq '.assets[] | "\(.name)\t\(.size) bytes"'
+          done
