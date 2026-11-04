@@ -186,12 +186,24 @@ jobs:
           test -s "$DEBUG_APK"
           test -s "$RELEASE_APK"
 
+          debug_bytes=$(stat -c %s "$DEBUG_APK")
+          release_bytes=$(stat -c %s "$RELEASE_APK")
+          debug_sha=$(sha256sum "$DEBUG_APK" | cut -d' ' -f1)
+          release_sha=$(sha256sum "$RELEASE_APK" | cut -d' ' -f1)
+          # The body names the commit, the run and the exact bytes it holds, so a
+          # release never describes an older build than the APKs it carries.
+          notes=$(printf '%s\n' \
+            "Signed arm64-v8a APKs built from ${COMMIT_SHA} by workflow run ${GITHUB_RUN_NUMBER}." \
+            "" \
+            "- app-arm64-v8a-debug.apk - ${debug_bytes} bytes, sha256 ${debug_sha}" \
+            "- app-arm64-v8a-release.apk - ${release_bytes} bytes, sha256 ${release_sha}")
+
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "Updating existing release $RELEASE_TAG"
           else
             gh release create "$RELEASE_TAG" \
               --title "Edge Vision CI build" \
-              --notes "Rolling build of the main branch. Both APK assets are replaced on every successful run." \
+              --notes "$notes" \
               --target "$COMMIT_SHA"
           fi
 
@@ -201,7 +213,7 @@ jobs:
 
           # Keep the rolling release attached to the commit that produced it,
           # otherwise the Releases page still points at the first build.
-          gh release edit "$RELEASE_TAG" --target "$COMMIT_SHA"
+          gh release edit "$RELEASE_TAG" --target "$COMMIT_SHA" --notes "$notes"
 
           # Also publish a versioned release, so finished work produces a
           # discoverable release entry with both APKs attached instead of only
@@ -214,10 +226,17 @@ jobs:
           else
             gh release create "$VERSION_TAG" \
               --title "Edge Vision v${VERSION_NAME}" \
-              --notes "Signed arm64-v8a APKs built from ${COMMIT_SHA} by workflow run ${GITHUB_RUN_NUMBER}." \
+              --notes "$notes" \
               --target "$COMMIT_SHA"
           fi
           gh release upload "$VERSION_TAG" "$DEBUG_APK" "$RELEASE_APK" --clobber
+
+          # Refreshing the assets also refreshes the description and target commit,
+          # so the versioned release always describes the build it holds.
+          gh release edit "$VERSION_TAG" \
+            --title "Edge Vision v${VERSION_NAME}" \
+            --target "$COMMIT_SHA" \
+            --notes "$notes"
 
           for TAG in "$RELEASE_TAG" "$VERSION_TAG"; do
             echo "--- $TAG"

@@ -66,6 +66,11 @@ and `ImageReader` synchronously. Pending Python work is invalidated, the detecto
 interpreter is released, the pulse loop is cancelled, and audio/TTS resources are
 released. Returning to the launcher starts the camera and Python session again.
 
+Turning the screen off pauses capture as well. The engine listens for
+`ACTION_SCREEN_OFF`/`ACTION_SCREEN_ON` and feeds `PowerManager.isInteractive()`
+to the same controller, so the camera and the detector never run behind a dark
+screen — the case where a wallpaper would otherwise spend power for nobody.
+
 The camera stream is capped at 1280x720. Frame conversion is throttled to ~15 fps
 and inference drops frames while the single worker is busy, so thermal load stays
 bounded.
@@ -98,6 +103,12 @@ and allow camera access, and keeps checking while the wallpaper stays visible
 Granting the permission from the settings screen therefore starts the camera
 without the user having to reset the wallpaper. A device that reports no camera at
 all shows its own notice and stops retrying.
+
+Detection failures are surfaced the same way instead of leaving a live preview
+that silently never alerts. `diagnostics/DetectionHealth.kt` tolerates two
+consecutive inference errors, shows a "detection unavailable" notice on the third,
+and clears it on the next successful result. A camera notice always wins, because
+a camera that is not running already explains the missing detections.
 
 ### Hazard behavior
 
@@ -215,6 +226,8 @@ inside `testDebugUnitTest`, so CI gates every push on them:
 | `DetectionContractSpec` | The Python/Kotlin detection JSON contract |
 | `CameraAccessSpec` | A missing camera permission shows a notice instead of a blank wallpaper |
 | `AdaptiveLoadSpec` | Heat and battery saver slow conversion without silencing detection |
+| `ScreenStateSpec` | A dark screen stops capture and resumes it without user action |
+| `DetectionHealthSpec` | Repeated detector failures are shown, transient ones are not |
 
 Write the spec for a new behaviour first, then the implementation; a failing step
 reports as `Then <step> failed: <assertion>`.
@@ -248,8 +261,10 @@ manual dispatch:
 Download the CI-built APKs from
 <https://github.com/Hakim3691/EdgeVision-Wallpaper/releases>: every successful
 `main` build refreshes `ci-latest` and the release named after `versionName` (for
-example `v1.1.0`). The assets are named `app-arm64-v8a-debug.apk` and
-`app-arm64-v8a-release.apk`. APKs are published as release assets rather than
+example `v1.1.1`). The assets are named `app-arm64-v8a-debug.apk` and
+`app-arm64-v8a-release.apk`. Each publish also rewrites the release body and the
+target commit with that build's commit, run number, asset sizes and SHA-256
+digests, so a release never describes an older build than the APKs it carries. APKs are published as release assets rather than
 Actions artifacts because Actions artifact storage is a small account-wide quota
 shared with every other repository on the account; release assets use repository
 storage and are not subject to it.
@@ -331,7 +346,7 @@ bash scripts/check_apk_size.sh app/build/outputs/apk/release/app-arm64-v8a-relea
 ## Known limitations
 
 - **Background camera access:** Android 9+ restricts camera use from background
-  components. A `WallpaperService` usually remains bound while the launcher is
+  components, which is why capture pauses when the screen is off. A `WallpaperService` usually remains bound while the launcher is
   visible, but some OEM builds may still deny camera access. A disconnect or denial
   is retried with bounded backoff (six attempts, 400 ms doubling to 8 s) and logged;
   if the OEM blocks camera access entirely, the wallpaper shows a permission notice
