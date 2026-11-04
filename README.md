@@ -18,9 +18,10 @@ All inference happens locally. Frames are never uploaded and the app requests on
 Camera2 (rear, YUV_420_888, capped 1280x720 @ <=30 fps)
   └─ ImageReader
        └─ YuvFrameConverter (off the main thread)
-            ├─ preview Bitmap (512 px wide) ──► SurfaceHolder (translucent)
+            ├─ preview Bitmap (512 px wide) ──► RenderMailbox (newest frame only)
+            │                                   └─ SurfaceHolder (translucent)
             │                                   └─ pulsing red Paint.Style.STROKE border
-            └─ 320x320 RGB bytes ──► HazardInferenceEngine (Chaquopy)
+            └─ 320x320 RGB bytes (upright, full field) ──► HazardInferenceEngine (Chaquopy)
                                       └─ Python hazard_detector
                                            └─ EfficientDet-Lite0 TFLite
                                                 └─ JSON {label, hazard, score, box}
@@ -39,8 +40,12 @@ Key files:
 | `wallpaper/CameraWallpaperService.kt` | `WallpaperService` engine, surface and pipeline wiring |
 | `wallpaper/WallpaperEngineController.kt` | Android-free visibility/surface state machine |
 | `wallpaper/HazardOverlayRenderer.kt` | Transparent preview and pulsing alert border |
+| `wallpaper/RenderMailbox.kt` | Single-slot frame handover: newest frame wins, memory stays flat |
+| `camera/CameraRecoveryPolicy.kt` | Bounded exponential reopen after a camera disconnect |
+| `camera/FrameGeometry.kt` | Display-to-sensor mapping so detection is upright and full field |
+| `diagnostics/RuntimeMetrics.kt` | Windowed fps, draw cost, inference latency and drop counters |
 | `camera/CameraController.kt` | Camera2 session, 720p/30 fps cap, synchronous release |
-| `camera/YuvFrameConverter.kt` | YUV to preview bitmap + 320x320 RGB downsample |
+| `camera/YuvFrameConverter.kt` | YUV to preview bitmap + upright full-field 320x320 RGB |
 | `inference/HazardInferenceEngine.kt` | Python worker, frame dropping, pause/release |
 | `inference/TfliteBridge.kt` | Interpreter bridge callable from Python |
 | `vision/HazardTracker.kt` | Proximity and expanding-box logic |
@@ -60,7 +65,21 @@ released. Returning to the launcher starts the camera and Python session again.
 
 The camera stream is capped at 1280x720. Frame conversion is throttled to ~15 fps
 and inference drops frames while the single worker is busy, so thermal load stays
-bounded. Detector input is a center-cropped 320x320 RGB buffer.
+bounded.
+
+Preview frames cross to the main thread through `RenderMailbox`, which holds at
+most one frame: a draw that overruns the capture cadence supersedes the waiting
+frame instead of queueing it. That bound is what keeps the preview live and keeps
+memory flat. An earlier unbounded queue drifted seconds behind the camera and
+retained one preview bitmap per queued frame, which ended in an out-of-memory kill
+whenever another app asked for memory.
+
+A camera disconnect, device error, or session configuration failure is no longer
+terminal. `CameraRecoveryPolicy` reopens the camera with a 400 ms delay that
+doubles up to 8 s, for six attempts, and resets on success or when the wallpaper
+is hidden. While the wallpaper is visible the engine logs one metrics line every
+five seconds with frames per second, draw cost, inference latency, dropped frames
+and hazard count.
 
 ### Hazard behavior
 
@@ -69,11 +88,19 @@ The Kaggle/TF Hub EfficientDet-Lite0 COCO label map is mapped to two hazard kind
 - **Vehicle:** bicycle, car, motorcycle, bus, train, truck
 - **Pole / vertical obstacle:** traffic light, fire hydrant, stop sign, parking meter
 
-A hazard fires when a detection reaches `minConfidence = 0.55` **and** either:
+Detector input is the whole frame rotated into display orientation. On a phone
+held upright the sensor buffer is landscape, so feeding the raw buffer made the
+model see the world sideways and also cropped away 44% of the field of view.
 
-- its normalized box area is at least `0.12`, or
-- its area is at least `0.06` and it grew by at least `1.5x` over a previous
-  matching box within 900 ms (rapid approach).
+A hazard fires when a detection reaches `minConfidence = 0.45` **and** either:
+
+- its normalized box area is at least `0.08`, or
+- its area is at least `0.03` and it grew by at least `1.25x` over a previous
+  matching box within 1200 ms (rapid approach).
+
+These numbers were lowered from the prototype's `0.55 / 0.12 / 1.5x / 900 ms`
+gate, which almost never fired on real hardware: a car that a walking user can
+already see clearly covers well under 12% of an upright frame.
 
 Thresholds live in `vision/HazardPolicy.kt`. Alert channels are selected by
 `alert/AlertPolicy.kt`: normal mode uses the red border and respects the sound and
@@ -136,7 +163,7 @@ environment variables, a local release build falls back to the Android debug key
 # Python decoder/taxonomy tests (stdlib only, no Android)
 python3 -m unittest discover -s tools/tests -v
 
-# JVM tests: lifecycle Gherkin scenarios, hazard policy, parser, Robolectric Espresso UI
+# JVM tests: Given/When/Then specs, hazard policy, parser, Robolectric Espresso UI
 bash ./gradlew :app:testDebugUnitTest
 
 # Instrumented Espresso + lifecycle tests (requires a running emulator/device)
@@ -146,6 +173,38 @@ bash ./gradlew :app:connectedDebugAndroidTest -PincludeX86Abi=true
 The `includeX86Abi` property adds `x86_64` only to debug builds so a GitHub-hosted
 emulator can install the app. Release builds and the default debug artifact contain
 only `arm64-v8a`.
+
+### Behaviour-driven specs
+
+`app/src/test/java/com/edgevision/wallpaper/bdd/` holds executable
+Given/When/Then specifications, with the step recorder in `bdd/Bdd.kt`. They run
+inside `testDebugUnitTest`, so CI gates every push on them:
+
+| Spec | Feature |
+| --- | --- |
+| `RenderPipelineSpec` | Newest frame wins, bounded memory, upright full-field detection, metrics |
+| `CameraRecoverySpec` | A disconnected camera reopens with bounded backoff |
+| `HazardDetectionSpec` | Hazards alert at a useful distance without false alarms |
+| `WallpaperLifecycleSpec` | Covering the home screen releases camera and inference |
+| `DetectionContractSpec` | The Python/Kotlin detection JSON contract |
+
+Write the spec for a new behaviour first, then the implementation; a failing step
+reports as `Then <step> failed: <assertion>`.
+
+### Field baseline on real hardware
+
+The emulator has no camera, so every performance and reliability claim comes from
+a physical arm64 device. With Edge Vision set as the live wallpaper and the home
+screen visible:
+
+```bash
+bash tools/field-baseline.sh 120
+```
+
+It writes `artifacts/field-baseline/<timestamp>/` containing the app's own metrics
+(`fps`, `draw_avg`, `draw_max`, `infer_avg`, `dropped`), battery and thermal
+snapshots before and after, PSS, and the device crash buffer. Watch the stream live
+with `adb logcat -s CameraWallpaper:I`.
 
 ## CI/CD
 
@@ -244,11 +303,12 @@ bash scripts/check_apk_size.sh app/build/outputs/apk/release/app-arm64-v8a-relea
 
 - **Background camera access:** Android 9+ restricts camera use from background
   components. A `WallpaperService` usually remains bound while the launcher is
-  visible, but some OEM builds may still deny camera access. The wallpaper fails
-  closed (transparent home screen, no crash), and the camera error is logged. A
-  foreground-service/notification workaround is not implemented because it adds a
-  persistent notification and restricted background-start behavior; validate on
-  your target devices.
+  visible, but some OEM builds may still deny camera access. A disconnect or denial
+  is retried with bounded backoff (six attempts, 400 ms doubling to 8 s) and logged;
+  if the OEM blocks camera access entirely, the wallpaper stays transparent rather
+  than crashing. A foreground-service/notification workaround is not implemented
+  because it adds a persistent notification and restricted background-start
+  behavior; validate on your target devices.
 - The COCO model has no bespoke `pole` class. Pole-like hazards come from the
   mapped street-fixture classes above; custom classes require retraining.
 - Detection is throttled and frame-dropping by design. Alerts are advisory and may
