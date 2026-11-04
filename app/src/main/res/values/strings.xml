@@ -4,6 +4,9 @@
     <string name="wallpaper_label">Edge Vision Wallpaper</string>
     <string name="wallpaper_description">A transparent camera wallpaper that watches for nearby vehicles and obstacles, with on-device hazard alerts.</string>
 
+    <string name="wallpaper_notice_camera_permission">Camera access is off. Open Edge Vision and allow camera access to start hazard detection.</string>
+    <string name="wallpaper_notice_no_camera">No camera was found on this device, so Edge Vision cannot watch for hazards.</string>
+
     <string name="title">Edge Vision</string>
     <string name="subtitle">A transparent live wallpaper with on-device hazard awareness. Frames never leave your phone.</string>
 

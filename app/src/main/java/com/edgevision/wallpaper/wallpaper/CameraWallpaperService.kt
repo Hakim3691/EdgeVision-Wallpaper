@@ -1,19 +1,31 @@
 package com.edgevision.wallpaper.wallpaper
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.PixelFormat
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.service.wallpaper.WallpaperService
 import android.util.Log
 import android.util.Size
 import android.view.SurfaceHolder
 import android.view.accessibility.AccessibilityManager
+import androidx.annotation.RequiresApi
+import androidx.core.content.ContextCompat
+import com.edgevision.wallpaper.R
 import com.edgevision.wallpaper.accessibility.AssistModeResolver
 import com.edgevision.wallpaper.alert.AlertCoordinator
 import com.edgevision.wallpaper.alert.AlertPolicy
+import com.edgevision.wallpaper.camera.CameraAccess
 import com.edgevision.wallpaper.camera.CameraController
 import com.edgevision.wallpaper.camera.ConvertedFrame
+import com.edgevision.wallpaper.diagnostics.LoadPolicy
+import com.edgevision.wallpaper.diagnostics.LoadProfile
 import com.edgevision.wallpaper.diagnostics.RuntimeMetrics
 import com.edgevision.wallpaper.inference.HazardInferenceEngine
 import com.edgevision.wallpaper.inference.InferenceResult
@@ -32,6 +44,7 @@ class CameraWallpaperService : WallpaperService() {
         private lateinit var settings: AssistSettings
         private lateinit var renderer: HazardOverlayRenderer
         private lateinit var alerts: AlertCoordinator
+        private lateinit var powerManager: PowerManager
 
         private val tracker = HazardTracker()
         private val metrics = RuntimeMetrics()
@@ -47,6 +60,8 @@ class CameraWallpaperService : WallpaperService() {
         private var inferenceEngine: HazardInferenceEngine? = null
         private var lifecycle: WallpaperEngineController? = null
         private var surfaceHolder: SurfaceHolder? = null
+        private var loadProfile: LoadProfile? = null
+        private var thermalCleanup: (() -> Unit)? = null
 
         @Volatile
         private var engineVisible = false
@@ -54,6 +69,12 @@ class CameraWallpaperService : WallpaperService() {
         private var pulseScheduled = false
 
         private val drainRunnable = Runnable { drainLatestFrame() }
+
+        private val powerSaveReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                applyLoadProfile()
+            }
+        }
 
         private val pulseRunnable = object : Runnable {
             override fun run() {
@@ -91,6 +112,7 @@ class CameraWallpaperService : WallpaperService() {
                 density = resources.displayMetrics.density,
             )
             alerts = AlertCoordinator(this@CameraWallpaperService)
+            powerManager = getSystemService(PowerManager::class.java)
 
             val camera = CameraController(this@CameraWallpaperService, this)
             val inference = HazardInferenceEngine(this@CameraWallpaperService, this)
@@ -108,6 +130,9 @@ class CameraWallpaperService : WallpaperService() {
                 },
                 onError = { message -> Log.w(TAG, message) },
             )
+
+            registerLoadObservers()
+            applyLoadProfile()
         }
 
         override fun onVisibilityChanged(visible: Boolean) {
@@ -117,6 +142,7 @@ class CameraWallpaperService : WallpaperService() {
 
             if (visible) {
                 alerts.prepare()
+                applyLoadProfile()
                 metrics.start(SystemClock.elapsedRealtime())
                 mainHandler.removeCallbacks(metricsRunnable)
                 mainHandler.postDelayed(metricsRunnable, METRICS_INTERVAL_MS)
@@ -163,6 +189,9 @@ class CameraWallpaperService : WallpaperService() {
             mainHandler.removeCallbacksAndMessages(null)
             pulseScheduled = false
             mailbox.discard()
+            thermalCleanup?.invoke()
+            thermalCleanup = null
+            runCatching { unregisterReceiver(powerSaveReceiver) }
             alerts.close()
             renderer.release()
             inferenceEngine?.close()
@@ -201,6 +230,24 @@ class CameraWallpaperService : WallpaperService() {
             Log.w(TAG, message, cause)
         }
 
+        /**
+         * A wallpaper cannot ask for permission itself, so an unusable camera is shown
+         * as text on the surface instead of an empty home screen. Recovery is silent:
+         * the controller keeps polling while visible, and the notice disappears as soon
+         * as capture starts.
+         */
+        override fun onCameraAccessChanged(access: CameraAccess) {
+            val notice = when (access) {
+                CameraAccess.READY -> null
+                CameraAccess.MISSING_PERMISSION -> getString(R.string.wallpaper_notice_camera_permission)
+                CameraAccess.NO_HARDWARE -> getString(R.string.wallpaper_notice_no_camera)
+            }
+            mainHandler.post {
+                if (!engineVisible) return@post
+                metrics.onDraw(renderer.setNotice(notice))
+            }
+        }
+
         override fun onInferenceResult(result: InferenceResult) {
             if (!engineVisible) return
             metrics.onInference(result.latencyMs)
@@ -237,6 +284,46 @@ class CameraWallpaperService : WallpaperService() {
             if (pulseScheduled) return
             pulseScheduled = true
             mainHandler.post(pulseRunnable)
+        }
+
+        private fun registerLoadObservers() {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                thermalCleanup = registerThermalObserver()
+            }
+            ContextCompat.registerReceiver(
+                this@CameraWallpaperService,
+                powerSaveReceiver,
+                IntentFilter(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED),
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+        }
+
+        @RequiresApi(Build.VERSION_CODES.Q)
+        private fun registerThermalObserver(): () -> Unit {
+            val executor = ContextCompat.getMainExecutor(this@CameraWallpaperService)
+            val listener = PowerManager.OnThermalStatusChangedListener { applyLoadProfile() }
+            powerManager.addThermalStatusListener(executor, listener)
+            return { powerManager.removeThermalStatusListener(listener) }
+        }
+
+        private fun applyLoadProfile() {
+            val thermalStatus = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                runCatching { powerManager.currentThermalStatus }.getOrNull()
+            } else {
+                null
+            }
+            val profile = LoadPolicy.profile(
+                pressure = LoadPolicy.pressureFor(thermalStatus),
+                powerSaveMode = runCatching { powerManager.isPowerSaveMode }.getOrDefault(false),
+            )
+            if (profile == loadProfile) return
+            loadProfile = profile
+            cameraController?.setFrameIntervalMs(profile.frameIntervalMs)
+            Log.i(
+                TAG,
+                "Load profile ${profile.label}: converting every ${profile.frameIntervalMs}ms, " +
+                    "detection enabled=${profile.detectionEnabled}",
+            )
         }
     }
 
