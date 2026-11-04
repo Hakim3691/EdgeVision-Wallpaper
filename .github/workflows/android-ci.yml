@@ -1,0 +1,172 @@
+name: Android CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+
+jobs:
+  python-tests:
+    name: Python detector tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run host-side detector tests
+        run: python -m unittest discover -s tools/tests -v
+
+  jvm-and-ui-tests:
+    name: JVM unit and Robolectric Espresso tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Provision pinned model and Gradle wrapper
+        run: bash tools/bootstrap.sh
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Run unit and UI tests
+        run: bash ./gradlew :app:testDebugUnitTest --configuration-cache --stacktrace
+
+  instrumentation-tests:
+    name: Espresso instrumentation (emulator)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Provision pinned model and Gradle wrapper
+        run: bash tools/bootstrap.sh
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run instrumented tests on API 34
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash ./gradlew :app:connectedDebugAndroidTest -PincludeX86Abi=true --configuration-cache --stacktrace
+
+  build-apks:
+    name: Build signed arm64 APKs and enforce size cap
+    runs-on: ubuntu-latest
+    needs: [python-tests, jvm-and-ui-tests, instrumentation-tests]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Provision pinned model and Gradle wrapper
+        run: bash tools/bootstrap.sh
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Provision debug and release keystores with keytool
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYSTORE_DIR="$RUNNER_TEMP/edgevision-keystore"
+          mkdir -p "$KEYSTORE_DIR"
+
+          keytool -genkeypair -noprompt \
+            -keystore "$KEYSTORE_DIR/debug.keystore" \
+            -storepass android -keypass android \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=EdgeVision Debug,O=EdgeVision,C=US"
+          {
+            echo "EDGEVISION_DEBUG_STORE_FILE=$KEYSTORE_DIR/debug.keystore"
+            echo "EDGEVISION_DEBUG_STORE_PASSWORD=android"
+            echo "EDGEVISION_DEBUG_KEY_ALIAS=androiddebugkey"
+            echo "EDGEVISION_DEBUG_KEY_PASSWORD=android"
+          } >> "$GITHUB_ENV"
+
+          if [[ -n "${KEYSTORE_BASE64:-}" ]]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_DIR/release.keystore"
+            : "${KEYSTORE_PASSWORD:?ANDROID_KEYSTORE_PASSWORD is required with a keystore}"
+            : "${KEY_ALIAS:?ANDROID_KEY_ALIAS is required with a keystore}"
+            : "${KEY_PASSWORD:?ANDROID_KEY_PASSWORD is required with a keystore}"
+            {
+              echo "EDGEVISION_RELEASE_STORE_PASSWORD=$KEYSTORE_PASSWORD"
+              echo "EDGEVISION_RELEASE_KEY_ALIAS=$KEY_ALIAS"
+              echo "EDGEVISION_RELEASE_KEY_PASSWORD=$KEY_PASSWORD"
+            } >> "$GITHUB_ENV"
+            echo "Using the repository release keystore."
+          else
+            RELEASE_PASSWORD="$(openssl rand -hex 16)"
+            echo "::add-mask::$RELEASE_PASSWORD"
+            keytool -genkeypair -noprompt \
+              -keystore "$KEYSTORE_DIR/release.keystore" \
+              -storepass "$RELEASE_PASSWORD" -keypass "$RELEASE_PASSWORD" \
+              -alias edgevision -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=EdgeVision CI,O=EdgeVision,C=US"
+            {
+              echo "EDGEVISION_RELEASE_STORE_PASSWORD=$RELEASE_PASSWORD"
+              echo "EDGEVISION_RELEASE_KEY_ALIAS=edgevision"
+              echo "EDGEVISION_RELEASE_KEY_PASSWORD=$RELEASE_PASSWORD"
+            } >> "$GITHUB_ENV"
+            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret configured; signed with an ephemeral CI key."
+          fi
+          echo "EDGEVISION_RELEASE_STORE_FILE=$KEYSTORE_DIR/release.keystore" >> "$GITHUB_ENV"
+
+      - name: Assemble debug and release APKs
+        run: >-
+          bash ./gradlew :app:assembleDebug :app:assembleRelease
+          --configuration-cache --build-cache --stacktrace
+
+      - name: Enforce 40 MB APK cap and arm64-only release
+        run: |
+          bash scripts/check_apk_size.sh \
+            app/build/outputs/apk/debug/app-arm64-v8a-debug.apk \
+            app/build/outputs/apk/release/app-arm64-v8a-release.apk
+          if unzip -Z1 app/build/outputs/apk/release/app-arm64-v8a-release.apk | grep -q '^lib/'; then
+            if unzip -Z1 app/build/outputs/apk/release/app-arm64-v8a-release.apk | grep -qE '^lib/(x86|x86_64|armeabi-v7a)/'; then
+              echo "::error::Release APK contains a non-arm64 ABI"
+              exit 1
+            fi
+          fi
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: edgevision-arm64-apks
+          if-no-files-found: error
+          path: |
+            app/build/outputs/apk/debug/app-arm64-v8a-debug.apk
+            app/build/outputs/apk/release/app-arm64-v8a-release.apk
