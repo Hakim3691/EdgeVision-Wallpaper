@@ -14,6 +14,7 @@ import com.edgevision.wallpaper.alert.AlertCoordinator
 import com.edgevision.wallpaper.alert.AlertPolicy
 import com.edgevision.wallpaper.camera.CameraController
 import com.edgevision.wallpaper.camera.ConvertedFrame
+import com.edgevision.wallpaper.diagnostics.RuntimeMetrics
 import com.edgevision.wallpaper.inference.HazardInferenceEngine
 import com.edgevision.wallpaper.inference.InferenceResult
 import com.edgevision.wallpaper.settings.AssistSettings
@@ -33,6 +34,15 @@ class CameraWallpaperService : WallpaperService() {
         private lateinit var alerts: AlertCoordinator
 
         private val tracker = HazardTracker()
+        private val metrics = RuntimeMetrics()
+
+        /**
+         * At most one camera frame waits for the main thread. A slow full-surface
+         * draw therefore supersedes the waiting frame instead of queueing it,
+         * which keeps the preview live and bounds memory use.
+         */
+        private val mailbox = RenderMailbox<ConvertedFrame> { frame -> frame.preview.recycle() }
+
         private var cameraController: CameraController? = null
         private var inferenceEngine: HazardInferenceEngine? = null
         private var lifecycle: WallpaperEngineController? = null
@@ -42,15 +52,30 @@ class CameraWallpaperService : WallpaperService() {
         private var engineVisible = false
 
         private var pulseScheduled = false
+
+        private val drainRunnable = Runnable { drainLatestFrame() }
+
         private val pulseRunnable = object : Runnable {
             override fun run() {
                 if (!pulseScheduled) return
-                renderer.draw()
+                if (!engineVisible) {
+                    pulseScheduled = false
+                    return
+                }
+                metrics.onDraw(renderer.draw())
                 if (renderer.isActive(SystemClock.elapsedRealtime())) {
                     mainHandler.postDelayed(this, PULSE_INTERVAL_MS)
                 } else {
                     pulseScheduled = false
                 }
+            }
+        }
+
+        private val metricsRunnable = object : Runnable {
+            override fun run() {
+                if (!engineVisible) return
+                Log.i(TAG, metrics.describe(SystemClock.elapsedRealtime()))
+                mainHandler.postDelayed(this, METRICS_INTERVAL_MS)
             }
         }
 
@@ -92,10 +117,16 @@ class CameraWallpaperService : WallpaperService() {
 
             if (visible) {
                 alerts.prepare()
+                metrics.start(SystemClock.elapsedRealtime())
+                mainHandler.removeCallbacks(metricsRunnable)
+                mainHandler.postDelayed(metricsRunnable, METRICS_INTERVAL_MS)
             } else {
                 // Release all rendering, audio, and detection state while hidden.
                 mainHandler.removeCallbacks(pulseRunnable)
+                mainHandler.removeCallbacks(drainRunnable)
+                mainHandler.removeCallbacks(metricsRunnable)
                 pulseScheduled = false
+                mailbox.discard()
                 renderer.clear()
                 alerts.stop()
                 tracker.reset()
@@ -115,7 +146,9 @@ class CameraWallpaperService : WallpaperService() {
         override fun onSurfaceDestroyed(holder: SurfaceHolder) {
             lifecycle?.onSurfaceAvailabilityChanged(false)
             mainHandler.removeCallbacks(pulseRunnable)
+            mainHandler.removeCallbacks(drainRunnable)
             pulseScheduled = false
+            mailbox.discard()
             renderer.detach()
             this.surfaceHolder = null
         }
@@ -129,6 +162,7 @@ class CameraWallpaperService : WallpaperService() {
             lifecycle?.destroy()
             mainHandler.removeCallbacksAndMessages(null)
             pulseScheduled = false
+            mailbox.discard()
             alerts.close()
             renderer.release()
             inferenceEngine?.close()
@@ -141,14 +175,22 @@ class CameraWallpaperService : WallpaperService() {
                 frame.preview.recycle()
                 return
             }
-            mainHandler.post {
-                if (!engineVisible) {
-                    frame.preview.recycle()
-                    return@post
-                }
-                renderer.onFrame(frame.preview, frame.rotationDegrees)
+            metrics.onFrame()
+            val scheduleDrain = mailbox.offer(frame)
+            metrics.onDroppedFrames(mailbox.droppedCount)
+            if (scheduleDrain) {
+                mainHandler.post(drainRunnable)
             }
             inferenceEngine?.submitFrame(frame.detectionRgb)
+        }
+
+        private fun drainLatestFrame() {
+            val frame = mailbox.take() ?: return
+            if (!engineVisible) {
+                frame.preview.recycle()
+                return
+            }
+            metrics.onDraw(renderer.onFrame(frame.preview, frame.rotationDegrees))
         }
 
         override fun onCameraStarted(previewSize: Size) {
@@ -161,8 +203,11 @@ class CameraWallpaperService : WallpaperService() {
 
         override fun onInferenceResult(result: InferenceResult) {
             if (!engineVisible) return
+            metrics.onInference(result.latencyMs)
+
             val now = SystemClock.elapsedRealtime()
             val event = tracker.update(result.detections, now) ?: return
+            metrics.onHazard()
 
             val accessibility = getSystemService(AccessibilityManager::class.java)
             val blindAssist = AssistModeResolver.isBlindAssistActive(
@@ -179,7 +224,7 @@ class CameraWallpaperService : WallpaperService() {
             alerts.dispatch(event, decision)
             mainHandler.post {
                 if (!engineVisible) return@post
-                renderer.onHazard(now, decision.visual)
+                metrics.onDraw(renderer.onHazard(now, decision.visual))
                 schedulePulse()
             }
         }
@@ -197,6 +242,7 @@ class CameraWallpaperService : WallpaperService() {
 
     private companion object {
         const val TAG = "CameraWallpaper"
-        const val PULSE_INTERVAL_MS = 33L
+        const val PULSE_INTERVAL_MS = 66L
+        const val METRICS_INTERVAL_MS = 5_000L
     }
 }

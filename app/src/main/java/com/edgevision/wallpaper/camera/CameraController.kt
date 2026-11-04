@@ -27,11 +27,17 @@ import kotlin.math.roundToInt
 /**
  * Owns Camera2 hardware for the wallpaper. The capture stream is capped at
  * 1280x720 / 30 fps. Frames are converted at most 15 times per second, and the
- * detector input is a 320x320 center crop produced by [YuvFrameConverter].
+ * detector input is a 320x320 upright view of the full frame produced by
+ * [YuvFrameConverter].
+ *
+ * Camera failures are recoverable: a disconnect, a transient device error, or a
+ * session configuration failure schedules a bounded exponential reopen through
+ * [CameraRecoveryPolicy] instead of leaving a permanently black wallpaper.
  */
 class CameraController(
     private val context: Context,
     private val listener: Listener,
+    private val recovery: CameraRecoveryPolicy = CameraRecoveryPolicy(),
 ) {
 
     interface Listener {
@@ -46,6 +52,7 @@ class CameraController(
     private val converter = YuvFrameConverter()
     private val openRunnable = Runnable { openCamera() }
 
+    /** User intent: the wallpaper wants frames. Cleared only by [stop]. */
     @Volatile
     private var running = false
     private var cameraDevice: CameraDevice? = null
@@ -68,23 +75,27 @@ class CameraController(
         }
         running = true
         lastProcessedAtMs = 0L
+        recovery.reset()
         cameraHandler.post(openRunnable)
     }
 
     /**
      * Stops frame delivery and closes the capture session/device immediately.
      * The close calls are allowed from any thread, so pausing the wallpaper is
-     * not delayed by the camera handler queue.
+     * not delayed by the camera handler queue. Pending reopen attempts are
+     * cancelled: only a later [start] may bring the camera back.
      */
     @Synchronized
     fun stop() {
         running = false
         cameraHandler.removeCallbacks(openRunnable)
+        recovery.reset()
         closeHardware()
     }
 
     fun close() {
         stop()
+        cameraHandler.removeCallbacksAndMessages(null)
         cameraThread.quitSafely()
     }
 
@@ -107,13 +118,25 @@ class CameraController(
         }
     }
 
+    /**
+     * Releases whatever hardware is still open and either schedules a retry or,
+     * once the recovery budget is spent, gives up until the next [start].
+     */
     private fun fail(message: String, cause: Throwable? = null) {
-        val shouldNotify = running
-        running = false
         closeHardware()
-        if (shouldNotify) {
-            listener.onCameraError(message, cause)
+        if (!running) return
+
+        val delayMs = recovery.nextDelayMs()
+        if (delayMs == null) {
+            running = false
+            listener.onCameraError(
+                "$message; giving up after ${recovery.maxAttempts} recovery attempts",
+                cause,
+            )
+            return
         }
+        listener.onCameraError("$message; reopening in ${delayMs}ms", cause)
+        cameraHandler.postDelayed(openRunnable, delayMs)
     }
 
     @SuppressLint("MissingPermission")
@@ -248,6 +271,8 @@ class CameraController(
             }.build()
 
             session.setRepeatingRequest(request, null, cameraHandler)
+            // Streaming again: the next failure starts a fresh backoff sequence.
+            recovery.reset()
             listener.onCameraStarted(Size(reader.width, reader.height))
         } catch (throwable: Throwable) {
             fail("Could not start camera frames: ${throwable.message}", throwable)
