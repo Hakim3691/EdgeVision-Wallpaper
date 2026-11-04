@@ -1,0 +1,27 @@
+*.iml
+.gradle/
+.idea/
+build/
+captures/
+local.properties
+.DS_Store
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.log
+
+# Never commit signing material.
+keystore/*.jks
+keystore/*.keystore
+!keystore/README.md
+
+# Binary assets are provisioned by the checksum-verified setup scripts.
+app/src/main/assets/models/*.tflite
+gradle/wrapper/gradle-wrapper.jar
+
+# Local tooling / virtual environments.
+.toolchain/
+.venv/
+__pycache__/
+*.pyc
