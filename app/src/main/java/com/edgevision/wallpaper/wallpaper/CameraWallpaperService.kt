@@ -24,6 +24,7 @@ import com.edgevision.wallpaper.alert.AlertPolicy
 import com.edgevision.wallpaper.camera.CameraAccess
 import com.edgevision.wallpaper.camera.CameraController
 import com.edgevision.wallpaper.camera.ConvertedFrame
+import com.edgevision.wallpaper.diagnostics.DetectionHealth
 import com.edgevision.wallpaper.diagnostics.LoadPolicy
 import com.edgevision.wallpaper.diagnostics.LoadProfile
 import com.edgevision.wallpaper.diagnostics.RuntimeMetrics
@@ -48,6 +49,7 @@ class CameraWallpaperService : WallpaperService() {
 
         private val tracker = HazardTracker()
         private val metrics = RuntimeMetrics()
+        private val detectionHealth = DetectionHealth()
 
         /**
          * At most one camera frame waits for the main thread. A slow full-surface
@@ -63,6 +65,10 @@ class CameraWallpaperService : WallpaperService() {
         private var loadProfile: LoadProfile? = null
         private var thermalCleanup: (() -> Unit)? = null
 
+        /** A camera problem explains missing detections by itself, so it wins. */
+        private var cameraNotice: String? = null
+        private var detectionNotice: String? = null
+
         @Volatile
         private var engineVisible = false
 
@@ -73,6 +79,12 @@ class CameraWallpaperService : WallpaperService() {
         private val powerSaveReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 applyLoadProfile()
+            }
+        }
+
+        private val screenReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                applyInteractiveState()
             }
         }
 
@@ -133,6 +145,7 @@ class CameraWallpaperService : WallpaperService() {
 
             registerLoadObservers()
             applyLoadProfile()
+            applyInteractiveState()
         }
 
         override fun onVisibilityChanged(visible: Boolean) {
@@ -143,6 +156,7 @@ class CameraWallpaperService : WallpaperService() {
             if (visible) {
                 alerts.prepare()
                 applyLoadProfile()
+                applyInteractiveState()
                 metrics.start(SystemClock.elapsedRealtime())
                 mainHandler.removeCallbacks(metricsRunnable)
                 mainHandler.postDelayed(metricsRunnable, METRICS_INTERVAL_MS)
@@ -153,6 +167,9 @@ class CameraWallpaperService : WallpaperService() {
                 mainHandler.removeCallbacks(metricsRunnable)
                 pulseScheduled = false
                 mailbox.discard()
+                cameraNotice = null
+                detectionNotice = null
+                detectionHealth.reset()
                 renderer.clear()
                 alerts.stop()
                 tracker.reset()
@@ -192,6 +209,7 @@ class CameraWallpaperService : WallpaperService() {
             thermalCleanup?.invoke()
             thermalCleanup = null
             runCatching { unregisterReceiver(powerSaveReceiver) }
+            runCatching { unregisterReceiver(screenReceiver) }
             alerts.close()
             renderer.release()
             inferenceEngine?.close()
@@ -237,19 +255,20 @@ class CameraWallpaperService : WallpaperService() {
          * as capture starts.
          */
         override fun onCameraAccessChanged(access: CameraAccess) {
-            val notice = when (access) {
+            cameraNotice = when (access) {
                 CameraAccess.READY -> null
                 CameraAccess.MISSING_PERMISSION -> getString(R.string.wallpaper_notice_camera_permission)
                 CameraAccess.NO_HARDWARE -> getString(R.string.wallpaper_notice_no_camera)
             }
-            mainHandler.post {
-                if (!engineVisible) return@post
-                metrics.onDraw(renderer.setNotice(notice))
-            }
+            mainHandler.post { refreshNotice() }
         }
 
         override fun onInferenceResult(result: InferenceResult) {
             if (!engineVisible) return
+            if (detectionHealth.onSuccess()) {
+                detectionNotice = null
+                mainHandler.post { refreshNotice() }
+            }
             metrics.onInference(result.latencyMs)
 
             val now = SystemClock.elapsedRealtime()
@@ -276,14 +295,27 @@ class CameraWallpaperService : WallpaperService() {
             }
         }
 
+        /**
+         * A dead detector used to be invisible while the preview kept streaming.
+         * Repeated failures now raise a notice, cleared by the next real result.
+         */
         override fun onInferenceError(message: String) {
             Log.w(TAG, "Inference unavailable: $message")
+            if (detectionHealth.onFailure()) {
+                detectionNotice = getString(R.string.wallpaper_notice_detection)
+                mainHandler.post { refreshNotice() }
+            }
         }
 
         private fun schedulePulse() {
             if (pulseScheduled) return
             pulseScheduled = true
             mainHandler.post(pulseRunnable)
+        }
+
+        private fun refreshNotice() {
+            if (!engineVisible) return
+            metrics.onDraw(renderer.setNotice(cameraNotice ?: detectionNotice))
         }
 
         private fun registerLoadObservers() {
@@ -296,6 +328,15 @@ class CameraWallpaperService : WallpaperService() {
                 IntentFilter(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED),
                 ContextCompat.RECEIVER_NOT_EXPORTED,
             )
+            ContextCompat.registerReceiver(
+                this@CameraWallpaperService,
+                screenReceiver,
+                IntentFilter().apply {
+                    addAction(Intent.ACTION_SCREEN_ON)
+                    addAction(Intent.ACTION_SCREEN_OFF)
+                },
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
         }
 
         @RequiresApi(Build.VERSION_CODES.Q)
@@ -304,6 +345,15 @@ class CameraWallpaperService : WallpaperService() {
             val listener = PowerManager.OnThermalStatusChangedListener { applyLoadProfile() }
             powerManager.addThermalStatusListener(executor, listener)
             return { powerManager.removeThermalStatusListener(listener) }
+        }
+
+        /**
+         * A wallpaper can stay bound behind the keyguard, and capturing through a dark
+         * screen costs battery and can trip background-camera restrictions.
+         */
+        private fun applyInteractiveState() {
+            val interactive = runCatching { powerManager.isInteractive }.getOrDefault(true)
+            lifecycle?.onInteractiveChanged(interactive)
         }
 
         private fun applyLoadProfile() {
