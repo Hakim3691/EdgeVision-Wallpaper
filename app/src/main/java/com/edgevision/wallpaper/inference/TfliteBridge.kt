@@ -21,10 +21,8 @@ class TfliteBridge(modelPath: String) : AutoCloseable {
     private val interpreter: Interpreter
     private val inputSize: Int
     private val inputBuffer: ByteBuffer
-    private val outputs: List<FloatArray>
     private val outputShapes: List<IntArray>
     private val outputNames: List<String>
-    private val outputMap: HashMap<Int, Any>
 
     init {
         val modelFile = File(modelPath)
@@ -52,22 +50,17 @@ class TfliteBridge(modelPath: String) : AutoCloseable {
         }
 
         inputBuffer = ByteBuffer.allocateDirect(expectedBytes).order(ByteOrder.nativeOrder())
-        outputs = (0 until interpreter.outputTensorCount).map { index ->
+        (0 until interpreter.outputTensorCount).forEach { index ->
             val tensor = interpreter.getOutputTensor(index)
             require(tensor.dataType() == DataType.FLOAT32) {
                 "Only float32 outputs are supported, output $index is ${tensor.dataType()}"
             }
-            FloatArray(tensor.numElements())
         }
         outputShapes = (0 until interpreter.outputTensorCount).map { index ->
             interpreter.getOutputTensor(index).shape()
         }
         outputNames = (0 until interpreter.outputTensorCount).map { index ->
             interpreter.getOutputTensor(index).name() ?: "output_$index"
-        }
-
-        outputMap = HashMap<Int, Any>().apply {
-            outputs.forEachIndexed { index, values -> put(index, values) }
         }
 
         interpreter.allocateTensors()
@@ -85,10 +78,20 @@ class TfliteBridge(modelPath: String) : AutoCloseable {
         inputBuffer.rewind()
         inputBuffer.put(rgb)
         inputBuffer.rewind()
-        interpreter.runForMultipleInputsOutputs(arrayOf<Any>(inputBuffer), outputMap)
+        // Null output lets TFLite keep its own dynamically shaped output tensors;
+        // reading them through asReadOnlyBuffer avoids preallocating a Java array
+        // whose rank must exactly match the model's postprocess tensors.
+        interpreter.run(inputBuffer, null)
 
         val outputArray = JSONArray()
-        outputs.forEachIndexed { index, values ->
+        (0 until interpreter.outputTensorCount).forEach { index ->
+            val tensor = interpreter.getOutputTensor(index)
+            val values = FloatArray(tensor.numElements())
+            tensor.asReadOnlyBuffer()
+                .order(ByteOrder.nativeOrder())
+                .asFloatBuffer()
+                .get(values)
+
             val tensorJson = JSONObject()
             tensorJson.put("name", outputNames[index])
             tensorJson.put("shape", JSONArray(outputShapes[index].toList()))
