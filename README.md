@@ -155,7 +155,16 @@ manual dispatch:
 1. Python detector unit tests.
 2. JVM unit tests plus Espresso-on-Robolectric UI tests.
 3. Instrumented Espresso tests on an API 34 x86_64 emulator.
-4. Signed debug and release arm64 builds, the 40 MiB size gate, and artifact upload.
+4. Signed debug and release arm64 builds, the 40 MiB size gate, and publishing of
+   both APKs as assets on the rolling `ci-latest` release.
+
+Download the CI-built APKs from
+<https://github.com/Hakim3691/EdgeVision-Wallpaper/releases/tag/ci-latest>: the
+assets are named `app-arm64-v8a-debug.apk` and `app-arm64-v8a-release.apk` and are
+replaced on every successful `main` build. APKs are published as release assets
+rather than Actions artifacts because Actions artifact storage is a small
+account-wide quota shared with every other repository on the account; release
+assets use repository storage and are not subject to it.
 
 Every Gradle job runs `bash tools/bootstrap.sh` before invoking the wrapper, so
 CI uses the same pinned model and wrapper checksums as a local build.
