@@ -12,6 +12,13 @@
 
     <string name="camera_status_granted">Camera permission granted</string>
     <string name="camera_status_missing">Camera permission required before detection can run</string>
+    <string name="threat_capture_armed">Threat capture armed</string>
+    <string name="threat_capture_disarmed">Threat capture disarmed</string>
+    <string name="threat_capture_burst_failed">Burst capture failed</string>
+    <string name="wallpaper_status_capture_armed">Capture mode: armed</string>
+    <string name="wallpaper_status_capture_disarmed">Capture mode: disarmed</string>
+    <string name="deactivate_wallpaper">Deactivate & change wallpaper</string>
+    <string name="wallpaper_picker_unavailable">No live wallpaper picker is available on this device.</string>
     <string name="wallpaper_status_active">Live wallpaper is active</string>
     <string name="wallpaper_status_inactive">Live wallpaper is not active yet</string>
     <string name="wallpaper_picker_unavailable">No live wallpaper picker is available on this device.</string>
