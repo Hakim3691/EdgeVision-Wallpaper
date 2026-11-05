@@ -51,30 +51,9 @@ class CameraWallpaperService : WallpaperService() {
         private val metrics = RuntimeMetrics()
         private val detectionHealth = DetectionHealth()
 
-        /**
-         * At most one camera frame waits for the main thread. A slow full-surface
-         * draw therefore supersedes the waiting frame instead of queueing it,
-         * which keeps the preview live and bounds memory use.
-         */
-        private val mailbox = RenderMailbox<ConvertedFrame> { frame -> frame.preview.recycle() }
-
-        private var cameraController: CameraController? = null
-        private var inferenceEngine: HazardInferenceEngine? = null
-        private var lifecycle: WallpaperEngineController? = null
-        private var surfaceHolder: SurfaceHolder? = null
-        private var loadProfile: LoadProfile? = null
-        private var thermalCleanup: (() -> Unit)? = null
-
         /** A camera problem explains missing detections by itself, so it wins. */
         private var cameraNotice: String? = null
         private var detectionNotice: String? = null
-
-        @Volatile
-        private var engineVisible = false
-
-        private var pulseScheduled = false
-
-        private var captureArmed = false
 
         /** Triple-tap gesture state tracking */
         private var tapCount = 0
@@ -85,13 +64,6 @@ class CameraWallpaperService : WallpaperService() {
         /** A camera problem explains missing detections by itself, so it wins. */
         private var cameraNotice: String? = null
         private var detectionNotice: String? = null
-
-        @Volatile
-        private var engineVisible = false
-
-        private var pulseScheduled = false
-
-        private var captureInProgress = false
 
         /** The gesture handler for triple-tap to toggle capture mode */
         private val gestureDetector = GestureDetectorCompat(this@CameraWallpaperService, object : GestureDetector.OnGestureListener {
@@ -134,7 +106,7 @@ class CameraWallpaperService : WallpaperService() {
 
                     if (tapCount >= 3) {
                         // Triple-tap: toggle capture mode
-                        captureArmed = !captureArmed
+                        CaptureState.captureArmed.value = !CaptureState.captureArmed.value
                         tapCount = 0
                         lastTapTime = 0L
                         mainHandler.post { refreshCaptureStatus() }
@@ -151,44 +123,6 @@ class CameraWallpaperService : WallpaperService() {
                 return false
             }
         })
-
-        private fun refreshCaptureStatus() {
-            if (captureArmed) {
-                captureStatusText = getString(R.string.wallpaper_status_capture_armed)
-                captureArmedAlpha.set(1f)
-                mainHandler.removeCallbacks(captureFadeRunnable)
-                mainHandler.post(captureFadeRunnable)
-            } else {
-                captureStatusText = getString(R.string.wallpaper_status_capture_disarmed)
-                captureArmedAlpha.set(0f)
-                mainHandler.removeCallbacks(captureFadeRunnable)
-            }
-            mainHandler.post { refreshNotice() }
-        }
-
-        private val captureFadeRunnable = object : Runnable {
-            override fun run() {
-                val current = captureArmedAlpha.get()
-                if (current > 0f) {
-                    captureArmedAlpha.set(current - 0.05f)
-                    mainHandler.postDelayed(this, 16L)
-                } else {
-                    captureArmedAlpha.set(0f)
-                    captureArmed = false
-                }
-            }
-        }
-
-        private val powerSaveReceiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
-                applyLoadProfile()
-            }
-        }
-
-        private val captureStatusText = AtomicReference<String?>(null)
-
-        /** Alpha fades from 1.0 to 0.0 over 2000ms after captureArmed toggles. */
-        private val captureArmedAlpha = AtomicFloat(1f)
 
         private val powerSaveReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
@@ -211,7 +145,7 @@ class CameraWallpaperService : WallpaperService() {
                 }
                 metrics.onDraw(renderer.draw())
                 if (renderer.isActive(SystemClock.elapsedRealtime())) {
-                    mainHandler.postDelayed(this, PULSE_INTERVAL_MS)
+                    mainHandler.postDelayed(this, 66L)
                 } else {
                     pulseScheduled = false
                 }
@@ -222,7 +156,7 @@ class CameraWallpaperService : WallpaperService() {
             override fun run() {
                 if (!engineVisible) return
                 Log.i(TAG, metrics.describe(SystemClock.elapsedRealtime()))
-                mainHandler.postDelayed(this, METRICS_INTERVAL_MS)
+                mainHandler.postDelayed(this, 5_000L)
             }
         }
 
@@ -273,7 +207,7 @@ class CameraWallpaperService : WallpaperService() {
                 applyInteractiveState()
                 metrics.start(SystemClock.elapsedRealtime())
                 mainHandler.removeCallbacks(metricsRunnable)
-                mainHandler.postDelayed(metricsRunnable, METRICS_INTERVAL_MS)
+                mainHandler.postDelayed(metricsRunnable, 5_000L)
             } else {
                 // Release all rendering, audio, and detection state while hidden.
                 mainHandler.removeCallbacks(pulseRunnable)
@@ -362,12 +296,7 @@ class CameraWallpaperService : WallpaperService() {
             Log.w(TAG, message, cause)
         }
 
-        /**
-         * A wallpaper cannot ask for permission itself, so an unusable camera is shown
-         * as text on the surface instead of an empty home screen. Recovery is silent:
-         * the controller keeps polling while visible, and the notice disappears as soon
-         * as capture starts.
-         */
+        /** A wallpaper cannot ask for permission itself, so an unusable camera is shown as text on the surface instead of an empty home screen. Recovery is silent: the controller keeps polling while visible, and the notice disappears as soon as capture starts. */
         override fun onCameraAccessChanged(access: CameraAccess) {
             cameraNotice = when (access) {
                 CameraAccess.READY -> null
@@ -409,10 +338,7 @@ class CameraWallpaperService : WallpaperService() {
             }
         }
 
-        /**
-         * A dead detector used to be invisible while the preview kept streaming.
-         * Repeated failures now raise a notice, cleared by the next real result.
-         */
+        /** A dead detector used to be invisible while the preview kept streaming. Repeated failures now raise a notice, cleared by the next real result. */
         override fun onInferenceError(message: String) {
             Log.w(TAG, "Inference unavailable: $message")
             if (detectionHealth.onFailure()) {
@@ -461,10 +387,7 @@ class CameraWallpaperService : WallpaperService() {
             return { powerManager.removeThermalStatusListener(listener) }
         }
 
-        /**
-         * A wallpaper can stay bound behind the keyguard, and capturing through a dark
-         * screen costs battery and can trip background-camera restrictions.
-         */
+        /** A wallpaper can stay bound behind the keyguard, and capturing through a dark screen costs battery and can trip background-camera restrictions. */
         private fun applyInteractiveState() {
             val interactive = runCatching { powerManager.isInteractive }.getOrDefault(true)
             lifecycle?.onInteractiveChanged(interactive)
@@ -485,8 +408,7 @@ class CameraWallpaperService : WallpaperService() {
             cameraController?.setFrameIntervalMs(profile.frameIntervalMs)
             Log.i(
                 TAG,
-                "Load profile ${profile.label}: converting every ${profile.frameIntervalMs}ms, " +
-                    "detection enabled=${profile.detectionEnabled}",
+                "Load profile ${profile.label}: converting every ${profile.frameIntervalMs}ms, detection enabled=${profile.detectionEnabled}",
             )
         }
     }

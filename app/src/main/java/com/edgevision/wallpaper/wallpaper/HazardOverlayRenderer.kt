@@ -60,11 +60,13 @@ class HazardOverlayRenderer(
     private var visualAlertEnabled = false
     private var notice: String? = null
     /** True when capture mode is armed; drives the transient red-dot indicator. */
-    private var captureArmed = false
-    /** Timestamp when captureArmed was last toggled, for fade-out animation. */
-    private var captureArmedUntilMs = 0L
+    // NOTE: captureArmed state is now managed by CaptureState object for single source of truth.
+    // This local variable is kept for read-only observation only.
+    private val captureArmed by CaptureState.captureArmed.asState()
     /** Alpha of the red-dot indicator, animated from 1.0 to 0.0 over 2000ms. */
-    private var captureArmedAlpha = 0f
+    // Managed by CaptureState; renderer observes via state flow.
+    // The fade is handled by CameraWallpaperService's captureFadeRunnable.
+    private val captureArmedAlpha by CaptureState.captureArmedAlpha.map { it }
 
     fun attach(surfaceHolder: SurfaceHolder) {
         holder = surfaceHolder
@@ -143,7 +145,7 @@ class HazardOverlayRenderer(
             }
 
             // Draw transient capture-armed indicator (red dot/slashed icon fading over 2000ms)
-            if (captureArmed && nowMs < captureArmedUntilMs) {
+            if (captureArmed) {
                 val alpha = captureArmedAlpha * 255f
                 drawCaptureIndicator(canvas, nowMs, alpha.coerceAt(0f, 255f).toInt())
             }
@@ -159,13 +161,14 @@ class HazardOverlayRenderer(
      *  The alpha fade-out over 2000ms is handled by the service.
      */
     fun updateCaptureArmed(armed: Boolean, nowMs: Long) {
-        captureArmed = armed
+        // Update the shared single source of truth for captureArmed state.
+        CaptureState.captureArmed.value = armed
         if (armed) {
-            captureArmedAlpha = 1f
-            captureArmedUntilMs = nowMs + 2000L
+            CaptureState.captureArmedAlpha.value = 1f
+            CaptureState.captureArmedToggleMs = nowMs
         } else {
-            captureArmedAlpha = 0f
-            captureArmedUntilMs = 0L
+            CaptureState.captureArmedAlpha.value = 0f
+            CaptureState.captureArmedToggleMs = 0L
         }
     }
 
@@ -284,6 +287,7 @@ class HazardOverlayRenderer(
         canvas.drawCircle(x + size / 2f, y + size / 2f, size / 2f, circlePaint)
 
         // Draw slashed line when armed (indicating capture mode)
+        // Armed state comes from CaptureState; check its current value.
         if (captureArmed) {
             val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.WHITE
