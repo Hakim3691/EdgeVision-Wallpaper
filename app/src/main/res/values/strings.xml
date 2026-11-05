@@ -1,10 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Edge Vision</string>
-    <string name="wallpaper_label">Edge Vision Wallpaper</string>
+    <string name="app_name">Android Clear</string>
+    <string name="wallpaper_label">Android Clear</string>
     <string name="wallpaper_description">A transparent camera wallpaper that watches for nearby vehicles and obstacles, with on-device hazard alerts.</string>
 
-    <string name="title">Edge Vision</string>
+    <string name="wallpaper_notice_camera_permission">Camera access is off. Open Android Clear and allow camera access to start hazard detection.</string>
+    <string name="wallpaper_notice_no_camera">No camera was found on this device, so Android Clear cannot watch for hazards.</string>
+    <string name="wallpaper_notice_detection">Hazard detection is unavailable. Use Android Clear once to reload the detector, then return to the home screen.</string>
+    <string name="title">Android Clear</string>
     <string name="subtitle">A transparent live wallpaper with on-device hazard awareness. Frames never leave your phone.</string>
 
     <string name="camera_status_granted">Camera permission granted</string>

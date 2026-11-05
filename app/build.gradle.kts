@@ -36,8 +36,8 @@ android {
         applicationId = "com.edgevision.wallpaper"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 3
+        versionName = "1.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -82,10 +82,10 @@ android {
         getByName("release") {
             isMinifyEnabled = false
             isShrinkResources = false
-            // Local release builds fall back to the debug key. CI always supplies
-            // EDGEVISION_RELEASE_* and therefore signs with the release keystore.
+            // Only the release keystore signs a release build. Falling back to the
+            // debug key produces an APK that no store build can upgrade, and does it
+            // silently, so the opt-in below is required for a local debug-signed build.
             signingConfig = signingConfigs.findByName("release")
-                ?: signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -128,6 +128,33 @@ android {
             (this as? BaseVariantOutputImpl)?.outputFileName = "app-arm64-v8a-$variantName.apk"
         }
     }
+}
+
+// Shipping an APK called "release" that is signed with the debug key is a silent
+// trap: it installs fine, but no store build can upgrade it. Building one now has
+// to be asked for explicitly. The check lives in its own task, and the values it
+// needs are read inside that task so the configuration cache can serialize it.
+val verifyReleaseSigning = tasks.register("verifyReleaseSigning") {
+    val keystoreConfigured = System.getenv("EDGEVISION_RELEASE_STORE_FILE").isNullOrBlank().not()
+    val debugSigningAllowed = providers.gradleProperty("allowDebugReleaseSigning")
+        .orNull
+        .toBoolean()
+    doLast {
+        if (!keystoreConfigured && !debugSigningAllowed) {
+            throw GradleException(
+                "assembleRelease needs a release keystore: set EDGEVISION_RELEASE_STORE_FILE, " +
+                    "EDGEVISION_RELEASE_STORE_PASSWORD, EDGEVISION_RELEASE_KEY_ALIAS and " +
+                    "EDGEVISION_RELEASE_KEY_PASSWORD, or pass " +
+                    "-PallowDebugReleaseSigning=true for a locally installable " +
+                    "debug-signed build.",
+            )
+        }
+    }
+}
+
+// Fails a release build before it compiles anything.
+tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+    dependsOn(verifyReleaseSigning)
 }
 
 chaquopy {
