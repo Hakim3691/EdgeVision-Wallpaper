@@ -57,7 +57,7 @@ android {
             create("release") {
                 storeFile = file(releaseStorePath)
                 storePassword = System.getenv("EDGEVISION_RELEASE_STORE_PASSWORD")
-                keyAlias = System.getenv("EDGEVISION_RELEASE_KEY_ALIAS") ?: "edgevision"
+                keyAlias = System.getenv("EDGEVISION_RELEASE_KEY_ALIAS") ?: "androidclear"
                 keyPassword = System.getenv("EDGEVISION_RELEASE_KEY_PASSWORD")
             }
         }

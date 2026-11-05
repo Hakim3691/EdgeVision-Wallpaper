@@ -7,4 +7,4 @@ import android.app.Application
  * starting the interpreter only when the wallpaper becomes visible keeps launch
  * time and idle memory low.
  */
-class EdgeVisionApp : Application()
+class AndroidClearApp : Application()

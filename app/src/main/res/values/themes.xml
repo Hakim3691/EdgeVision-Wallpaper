@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.EdgeVision" parent="Theme.Material3.Dark.NoActionBar">
+    <style name="Theme.AndroidClear" parent="Theme.Material3.Dark.NoActionBar">
         <item name="colorPrimary">@color/alert_red</item>
         <item name="colorOnPrimary">@color/on_surface</item>
         <item name="colorSecondary">@color/accent_blue</item>

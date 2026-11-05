@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "EdgeVisionWallpaper"
+rootProject.name = "AndroidClearWallpaper"
 include(":app")
