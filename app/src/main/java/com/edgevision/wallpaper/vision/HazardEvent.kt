@@ -10,5 +10,6 @@ data class HazardEvent(
     val area: Double,
     val growth: Double,
     val box: Box,
+    val headingDegrees: Int = 0,
     val timestampMs: Long,
 )

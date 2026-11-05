@@ -16,13 +16,23 @@ import kotlin.math.sin
  * Draws into the wallpaper surface with a translucent backing. All calls must be
  * made on the wallpaper's main thread; camera bitmaps are handed over through the
  * engine after posting to that thread.
+ *
+ * Every draw is a full-surface software composite, so it is the most expensive
+ * thing the wallpaper does on the main thread. Draws return their duration so the
+ * service can log real numbers instead of guessing at jank.
+ *
+ * A [setNotice] message replaces the otherwise empty home screen when the camera
+ * cannot run (permission missing, no camera hardware). Without it those states
+ * looked like a broken wallpaper.
  */
 class HazardOverlayRenderer(
     private val settings: AssistSettings,
     private val density: Float,
 ) {
 
-    private val previewPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
+    // Dithering is deliberately off: it costs a per-pixel rounding pass on the
+    // scaled preview and is invisible behind the translucent overlay.
+    private val previewPaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         color = BORDER_COLOR
@@ -33,12 +43,22 @@ class HazardOverlayRenderer(
         color = BORDER_COLOR
         strokeWidth = 22f * density
     }
+    private val noticePanelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(200, 12, 14, 18)
+    }
+    private val noticeTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textAlign = Paint.Align.CENTER
+        textSize = 15f * density
+    }
+    private val noticeRect = RectF()
 
     private var holder: SurfaceHolder? = null
     private var preview: Bitmap? = null
     private var rotationDegrees = 0
     private var hazardUntilMs = 0L
     private var visualAlertEnabled = false
+    private var notice: String? = null
 
     fun attach(surfaceHolder: SurfaceHolder) {
         holder = surfaceHolder
@@ -54,42 +74,60 @@ class HazardOverlayRenderer(
     fun release() {
         hazardUntilMs = 0L
         visualAlertEnabled = false
+        notice = null
         detach()
     }
 
     fun clear() {
         hazardUntilMs = 0L
         visualAlertEnabled = false
+        notice = null
         draw()
     }
 
-    fun onFrame(bitmap: Bitmap, rotation: Int) {
+    /**
+     * Shows or removes the explanatory panel. Passing the text that is already
+     * shown is a no-op, so the engine can call this on every camera state change
+     * without paying for another full-surface composite.
+     */
+    fun setNotice(text: String?): Long {
+        if (notice == text) return 0L
+        notice = text
+        return draw()
+    }
+
+    /** Takes ownership of [bitmap]: it is drawn once and recycled when replaced. */
+    fun onFrame(bitmap: Bitmap, rotation: Int): Long {
         if (holder == null) {
             bitmap.recycle()
-            return
+            return 0L
         }
         val previous = preview
         preview = bitmap
         rotationDegrees = rotation
         previous?.recycle()
-        draw()
+        return draw()
     }
 
-    fun onHazard(nowMs: Long, showVisualAlert: Boolean) {
+    fun onHazard(nowMs: Long, showVisualAlert: Boolean): Long {
         hazardUntilMs = nowMs + HAZARD_HOLD_MS
         visualAlertEnabled = showVisualAlert
-        draw(nowMs)
+        return draw(nowMs)
     }
 
     fun isActive(nowMs: Long): Boolean = nowMs < hazardUntilMs
 
-    fun draw(nowMs: Long = SystemClock.uptimeMillis()) {
-        val surfaceHolder = holder ?: return
+    /** Draws one frame and returns how long the composite took, in milliseconds. */
+    fun draw(nowMs: Long = SystemClock.elapsedRealtime()): Long {
+        val surfaceHolder = holder ?: return 0L
+        if (!surfaceHolder.surface.isValid) return 0L
+
+        val startedAt = SystemClock.elapsedRealtime()
         val canvas = try {
             surfaceHolder.lockCanvas()
         } catch (throwable: Throwable) {
             null
-        } ?: return
+        } ?: return 0L
 
         try {
             canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
@@ -97,9 +135,11 @@ class HazardOverlayRenderer(
             if (visualAlertEnabled && nowMs < hazardUntilMs) {
                 drawHazardBorder(canvas, nowMs)
             }
+            notice?.let { text -> drawNotice(canvas, text) }
         } finally {
             runCatching { surfaceHolder.unlockCanvasAndPost(canvas) }
         }
+        return SystemClock.elapsedRealtime() - startedAt
     }
 
     private fun drawPreview(canvas: Canvas, bitmap: Bitmap) {
@@ -144,6 +184,52 @@ class HazardOverlayRenderer(
         glowRect.inset(4f * density, 4f * density)
         glowPaint.alpha = (24 + 46 * pulse).toInt().coerceIn(0, 255)
         canvas.drawRect(glowRect, glowPaint)
+    }
+
+    private fun drawNotice(canvas: Canvas, text: String) {
+        if (canvas.width == 0 || canvas.height == 0) return
+        val maxTextWidth = canvas.width * 0.76f
+        val lines = wrapNotice(text, maxTextWidth)
+        if (lines.isEmpty()) return
+
+        val metrics = noticeTextPaint.fontMetrics
+        val lineHeight = (metrics.descent - metrics.ascent) + 3f * density
+        val padding = 15f * density
+        val panelWidth = (lines.maxOf { noticeTextPaint.measureText(it) } + padding * 2f)
+            .coerceIn(canvas.width * 0.3f, canvas.width * 0.9f)
+        val panelHeight = lines.size * lineHeight + padding * 2f
+        val left = (canvas.width - panelWidth) / 2f
+        val bottom = canvas.height - 40f * density
+        val top = bottom - panelHeight
+
+        noticeRect.set(left, top, left + panelWidth, bottom)
+        val radius = 18f * density
+        canvas.drawRoundRect(noticeRect, radius, radius, noticePanelPaint)
+
+        var baseline = top + padding - metrics.ascent
+        for (line in lines) {
+            canvas.drawText(line, left + panelWidth / 2f, baseline, noticeTextPaint)
+            baseline += lineHeight
+        }
+    }
+
+    /** Greedy word wrap so a long notice never runs off a narrow wallpaper. */
+    private fun wrapNotice(text: String, maxWidth: Float): List<String> {
+        val words = text.split(' ').filter { it.isNotEmpty() }
+        if (words.isEmpty()) return emptyList()
+        val lines = mutableListOf<String>()
+        var current = StringBuilder()
+        for (word in words) {
+            val candidate = if (current.isEmpty()) word else "$current $word"
+            if (current.isNotEmpty() && noticeTextPaint.measureText(candidate) > maxWidth) {
+                lines += current.toString()
+                current = StringBuilder(word)
+            } else {
+                current = StringBuilder(candidate)
+            }
+        }
+        if (current.isNotEmpty()) lines += current.toString()
+        return lines
     }
 
     private companion object {

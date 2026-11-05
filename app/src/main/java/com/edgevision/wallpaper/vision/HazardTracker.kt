@@ -17,6 +17,7 @@ class HazardTracker(private val policy: HazardPolicy = HazardPolicy()) {
         var box: Box,
         var area: Double,
         var updatedAtMs: Long,
+        var headingDegrees: Float = 0f,
     )
 
     private val tracks = ArrayList<Track>()
@@ -46,10 +47,20 @@ class HazardTracker(private val policy: HazardPolicy = HazardPolicy()) {
             val isProximate = area >= policy.proximityArea ||
                 (area >= policy.expandingArea && growth >= policy.expansionRatio)
 
+            // Compute heading direction from box motion (delta in normalized coordinates)
+            val headingDeg = if (matched != null) {
+                val dx = detection.box.left - matched.box.left
+                val dy = detection.box.top - matched.box.top
+                (atan2(-dy, dx) * 180 / 3.14159265359).roundToInt() % 360
+            } else {
+                0
+            }
+
             if (matched != null) {
                 matched.box = detection.box
                 matched.area = area
                 matched.updatedAtMs = nowMs
+                matched.headingDegrees = headingDeg
             } else {
                 tracks += Track(
                     kind = kind,
@@ -57,6 +68,7 @@ class HazardTracker(private val policy: HazardPolicy = HazardPolicy()) {
                     box = detection.box,
                     area = area,
                     updatedAtMs = nowMs,
+                    headingDegrees = headingDeg,
                 )
             }
 
@@ -68,6 +80,7 @@ class HazardTracker(private val policy: HazardPolicy = HazardPolicy()) {
                     area = area,
                     growth = growth,
                     box = detection.box,
+                    headingDegrees = headingDeg,
                     timestampMs = nowMs,
                 )
                 if (best == null ||

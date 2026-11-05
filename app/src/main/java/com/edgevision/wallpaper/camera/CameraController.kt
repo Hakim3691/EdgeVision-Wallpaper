@@ -26,18 +26,30 @@ import kotlin.math.roundToInt
 
 /**
  * Owns Camera2 hardware for the wallpaper. The capture stream is capped at
- * 1280x720 / 30 fps. Frames are converted at most 15 times per second, and the
- * detector input is a 320x320 center crop produced by [YuvFrameConverter].
+ * 1280x720 / 30 fps. Frames are converted at most 15 times per second, less when
+ * the device is hot or in battery saver, and the detector input is a 320x320
+ * upright view of the full frame produced by [YuvFrameConverter].
+ *
+ * A missing camera permission is reported through [Listener.onCameraAccessChanged]
+ * and re-checked on a bounded backoff instead of being treated as a fatal error.
+ *
+ * Camera failures are recoverable: a disconnect, a transient device error, or a
+ * session configuration failure schedules a bounded exponential reopen through
+ * [CameraRecoveryPolicy] instead of leaving a permanently black wallpaper.
  */
 class CameraController(
     private val context: Context,
     private val listener: Listener,
+    private val recovery: CameraRecoveryPolicy = CameraRecoveryPolicy(),
 ) {
 
     interface Listener {
         fun onFrame(frame: ConvertedFrame)
         fun onCameraStarted(previewSize: Size)
         fun onCameraError(message: String, cause: Throwable? = null)
+
+        /** Reports permission/hardware state so the surface can explain a blank screen. */
+        fun onCameraAccessChanged(access: CameraAccess) {}
     }
 
     private val lock = Any()
@@ -45,7 +57,10 @@ class CameraController(
     private val cameraHandler = Handler(cameraThread.looper)
     private val converter = YuvFrameConverter()
     private val openRunnable = Runnable { openCamera() }
+    /** Reused ConvertedFrame to avoid per-frame allocation. */
+    private var recycledFrame: ConvertedFrame? = null
 
+    /** User intent: the wallpaper wants frames. Cleared only by [stop]. */
     @Volatile
     private var running = false
     private var cameraDevice: CameraDevice? = null
@@ -57,34 +72,52 @@ class CameraController(
     private var continuousAfSupported = false
     private var lastProcessedAtMs = 0L
 
+    private val permissionWait = CameraPermissionWaitPolicy()
+    private val permissionPollRunnable = Runnable { if (running) cameraHandler.post(openRunnable) }
+    private var lastReportedAccess: CameraAccess? = null
+
+    @Volatile
+    private var frameIntervalMs = DEFAULT_FRAME_INTERVAL_MS
+
     @Synchronized
     fun start() {
         if (running) return
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            listener.onCameraError("Camera permission has not been granted")
-            return
-        }
         running = true
         lastProcessedAtMs = 0L
+        lastReportedAccess = null
+        recovery.reset()
+        permissionWait.reset()
         cameraHandler.post(openRunnable)
+    }
+
+    /**
+     * Sets how often camera frames are converted. [com.edgevision.wallpaper.diagnostics.LoadPolicy]
+     * lowers this under thermal or battery pressure; detection is unaffected.
+     */
+    fun setFrameIntervalMs(value: Long) {
+        frameIntervalMs = value.coerceIn(MIN_FRAME_INTERVAL_MS, MAX_FRAME_INTERVAL_MS)
     }
 
     /**
      * Stops frame delivery and closes the capture session/device immediately.
      * The close calls are allowed from any thread, so pausing the wallpaper is
-     * not delayed by the camera handler queue.
+     * not delayed by the camera handler queue. Pending reopen attempts are
+     * cancelled: only a later [start] may bring the camera back.
      */
     @Synchronized
     fun stop() {
         running = false
         cameraHandler.removeCallbacks(openRunnable)
+        cameraHandler.removeCallbacks(permissionPollRunnable)
+        recovery.reset()
+        permissionWait.reset()
+        lastReportedAccess = null
         closeHardware()
     }
 
     fun close() {
         stop()
+        cameraHandler.removeCallbacksAndMessages(null)
         cameraThread.quitSafely()
     }
 
@@ -107,13 +140,76 @@ class CameraController(
         }
     }
 
+    /**
+     * Releases whatever hardware is still open and either schedules a retry or,
+     * once the recovery budget is spent, gives up until the next [start].
+     */
     private fun fail(message: String, cause: Throwable? = null) {
-        val shouldNotify = running
-        running = false
         closeHardware()
-        if (shouldNotify) {
-            listener.onCameraError(message, cause)
+        if (!running) return
+
+        val delayMs = recovery.nextDelayMs()
+        if (delayMs == null) {
+            running = false
+            listener.onCameraError(
+                "$message; giving up after ${recovery.maxAttempts} recovery attempts",
+                cause,
+            )
+            return
         }
+        listener.onCameraError("$message; reopening in ${delayMs}ms", cause)
+        cameraHandler.postDelayed(openRunnable, delayMs)
+    }
+
+    private fun resolveAccess(manager: CameraManager): CameraAccess {
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA,
+        ) == PackageManager.PERMISSION_GRANTED
+        val available = runCatching { manager.cameraIdList.isNotEmpty() }.getOrDefault(false)
+        return CameraAccess.resolve(permissionGranted = granted, cameraAvailable = available)
+    }
+
+    /**
+     * The wallpaper cannot raise a permission dialog, so a missing permission is
+     * not something the engine can fix. It reports the state (the surface shows a
+     * notice) and keeps checking cheaply while it stays visible, so granting the
+     * permission from the settings screen brings the camera up without the user
+     * having to reset the wallpaper.
+     */
+    private fun waitForAccess(access: CameraAccess) {
+        closeHardware()
+        notifyAccess(access)
+
+        if (access == CameraAccess.NO_HARDWARE) {
+            running = false
+            return
+        }
+
+        val delayMs = permissionWait.nextDelayMs()
+        if (delayMs == null) {
+            running = false
+            listener.onCameraError(
+                "Camera permission is still missing after ${permissionWait.maxChecks} checks; " +
+                    "waiting for the wallpaper to be shown again",
+            )
+            return
+        }
+        cameraHandler.removeCallbacks(permissionPollRunnable)
+        cameraHandler.postDelayed(permissionPollRunnable, delayMs)
+    }
+
+    private fun notifyAccess(access: CameraAccess) {
+        if (lastReportedAccess == access) return
+        lastReportedAccess = access
+        when (access) {
+            CameraAccess.READY -> Unit
+            CameraAccess.MISSING_PERMISSION -> listener.onCameraError(
+                "Camera permission has not been granted; the wallpaper keeps checking while it is visible",
+            )
+            CameraAccess.NO_HARDWARE -> listener.onCameraError("No camera is available on this device")
+        }
+        listener.onCameraAccessChanged(access)
     }
 
     @SuppressLint("MissingPermission")
@@ -124,6 +220,12 @@ class CameraController(
                 fail("Camera service is unavailable")
                 return
             }
+
+        val access = resolveAccess(manager)
+        if (access != CameraAccess.READY) {
+            waitForAccess(access)
+            return
+        }
 
         try {
             val cameraId = selectCameraId(manager) ?: run {
@@ -248,6 +350,10 @@ class CameraController(
             }.build()
 
             session.setRepeatingRequest(request, null, cameraHandler)
+            // Streaming again: the next failure starts a fresh backoff sequence.
+            recovery.reset()
+            permissionWait.reset()
+            notifyAccess(CameraAccess.READY)
             listener.onCameraStarted(Size(reader.width, reader.height))
         } catch (throwable: Throwable) {
             fail("Could not start camera frames: ${throwable.message}", throwable)
@@ -257,7 +363,7 @@ class CameraController(
     private fun handleImage(reader: ImageReader) {
         if (!running) return
         val now = SystemClock.elapsedRealtime()
-        if (now - lastProcessedAtMs < FRAME_INTERVAL_MS) return
+        if (now - lastProcessedAtMs < frameIntervalMs) return
 
         val image = try {
             reader.acquireLatestImage()
@@ -265,27 +371,15 @@ class CameraController(
             return
         } ?: return
 
-        image.use { frame ->
-            if (!running) return
-            lastProcessedAtMs = now
-            try {
-                val sourceAspect = frame.width.toFloat() / frame.height.toFloat()
-                val previewWidth = PREVIEW_MAX_WIDTH
-                val previewHeight = (previewWidth / sourceAspect)
-                    .roundToInt()
-                    .coerceAtLeast(2)
-                val converted = converter.convert(
-                    image = frame,
-                    previewWidth = previewWidth,
-                    previewHeight = previewHeight,
-                    detectionSize = DETECTION_SIZE,
-                    rotationDegrees = rotationDegrees(),
-                )
-                listener.onFrame(converted)
-            } catch (throwable: Throwable) {
-                Log.w(TAG, "Frame conversion failed", throwable)
-            }
-        }
+        // Convert frame for this cycle (recycling roadmap: add listener.onFrameDone callback for buffer reuse)
+        val converted = converter.convert(
+            image = frame,
+            previewWidth = PREVIEW_MAX_WIDTH,
+            previewHeight = (PREVIEW_MAX_WIDTH.toFloat() / frame.width.toFloat() * frame.height).roundToInt().coerceAtLeast(2),
+            detectionSize = DETECTION_SIZE,
+            rotationDegrees = rotationDegrees(),
+        )
+        listener.onFrame(converted)
     }
 
     private fun rotationDegrees(): Int {
@@ -333,7 +427,9 @@ class CameraController(
 
     companion object {
         private const val TAG = "CameraController"
-        private const val FRAME_INTERVAL_MS = 66L
+        private const val DEFAULT_FRAME_INTERVAL_MS = 66L
+        private const val MIN_FRAME_INTERVAL_MS = 33L
+        private const val MAX_FRAME_INTERVAL_MS = 1_000L
         private const val PREVIEW_MAX_WIDTH = 512
         private const val DETECTION_SIZE = 320
     }

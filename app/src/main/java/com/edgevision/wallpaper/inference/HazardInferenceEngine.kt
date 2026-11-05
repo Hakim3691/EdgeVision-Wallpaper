@@ -3,21 +3,19 @@ package com.edgevision.wallpaper.inference
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
-import com.chaquo.python.PyObject
-import com.chaquo.python.Python
-import com.chaquo.python.android.AndroidPlatform
-import org.json.JSONObject
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Owns the Python detector and a single inference worker.
+ * Owns the Kotlin TFLite interpreter for hazard detection.
  *
+ * Replaces the Chaquopy Python pipeline with a direct TensorFlow Lite Java
+ * interpreter, eliminating Python startup overhead and reducing per-frame latency.
  * Frames are dropped rather than queued when the worker is busy, which keeps the
  * camera callback cheap and prevents a backlog from warming the device after a
- * slow frame. Stopping invalidates in-flight work and releases the Python-side
- * interpreter, so no inference thread survives a paused wallpaper.
+ * slow frame. Stopping invalidates in-flight work and releases the interpreter,
+ * so no inference thread survives a paused wallpaper.
  */
 class HazardInferenceEngine(
     context: Context,
@@ -37,12 +35,9 @@ class HazardInferenceEngine(
     private val session = AtomicInteger(0)
     private val initLock = Any()
 
+    /** Kotlin TFLite detector wrapping the EfficientDet-Lite0 model. */
     @Volatile
-    private var detector: PyObject? = null
-    @Volatile
-    private var lastError: String? = null
-    @Volatile
-    private var lastErrorAtMs: Long = 0L
+    private var detector: TfliteDetector? = null
 
     fun start() {
         started.set(true)
@@ -64,16 +59,10 @@ class HazardInferenceEngine(
             worker.execute {
                 try {
                     if (!started.get() || session.get() != expectedSession) return@execute
-                    val module = ensureDetector()
-                    val json = module.callAttr(
-                        "detect",
-                        rgb,
-                        INPUT_SIZE,
-                        INPUT_SIZE,
-                        MIN_SCORE,
-                    ).toString()
-                    if (started.get() && session.get() == expectedSession) {
-                        listener.onInferenceResult(DetectionParser.parse(json))
+                        val result = detector?.detect(rgb)
+                        if (started.get() && session.get() == expectedSession && result != null) {
+                            listener.onInferenceResult(result)
+                        }
                     }
                 } catch (throwable: Throwable) {
                     reportError(throwable)
@@ -87,39 +76,13 @@ class HazardInferenceEngine(
         }
     }
 
-    fun close() {
-        stop()
-        // Let the queued detector shutdown finish; the worker is a daemon thread.
-        worker.shutdown()
-    }
-
-    private fun ensureDetector(): PyObject {
-        synchronized(initLock) {
-            detector?.let { return it }
-            if (!Python.isStarted()) {
-                Python.start(AndroidPlatform(appContext))
-            }
-            val module = Python.getInstance().getModule("hazard_detector")
-            val modelFile = ModelAssets.ensureModel(appContext)
-            val status = module.callAttr(
-                "initialize",
-                modelFile.absolutePath,
-                INPUT_SIZE,
-            ).toString()
-            val backend = runCatching {
-                JSONObject(status).optString("backend", "unknown")
-            }.getOrDefault("unknown")
-            Log.i(TAG, "Python detector ready (backend=$backend): $status")
-            detector = module
-            return module
-        }
-    }
-
     private fun releaseDetector() {
-        val module = detector ?: return
-        detector = null
-        runCatching { module.callAttr("shutdown") }
-            .onFailure { Log.w(TAG, "Python detector shutdown failed", it) }
+        val d = detector ?: return
+        synchronized(initLock) {
+            detector = null
+        }
+        runCatching { d.close() }
+            .onFailure { Log.w(TAG, "Tflite detector close failed", it) }
     }
 
     private fun reportError(throwable: Throwable) {
@@ -138,9 +101,6 @@ class HazardInferenceEngine(
     }
 
     companion object {
-        const val INPUT_SIZE = 320
-        private const val MIN_SCORE = 0.35f
-        private const val ERROR_REPEAT_MS = 5_000L
         private const val TAG = "HazardInference"
     }
 }

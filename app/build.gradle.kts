@@ -52,23 +52,35 @@ android {
 
     signingConfigs {
         // CI passes these variables after provisioning keystores with keytool.
+        // Local development may use ANDROIDCLEAR_* names; CI always injects EDGEVISION_*.
         val releaseStorePath = System.getenv("EDGEVISION_RELEASE_STORE_FILE")
+            ?: System.getenv("ANDROIDCLEAR_RELEASE_STORE_FILE")
         if (!releaseStorePath.isNullOrBlank()) {
             create("release") {
                 storeFile = file(releaseStorePath)
                 storePassword = System.getenv("EDGEVISION_RELEASE_STORE_PASSWORD")
-                keyAlias = System.getenv("EDGEVISION_RELEASE_KEY_ALIAS") ?: "androidclear"
+                    ?: System.getenv("ANDROIDCLEAR_RELEASE_STORE_PASSWORD")
+                keyAlias = System.getenv("EDGEVISION_RELEASE_KEY_ALIAS")
+                    ?: System.getenv("ANDROIDCLEAR_RELEASE_KEY_ALIAS")
+                    ?: "androidclear"
                 keyPassword = System.getenv("EDGEVISION_RELEASE_KEY_PASSWORD")
+                    ?: System.getenv("ANDROIDCLEAR_RELEASE_KEY_PASSWORD")
             }
         }
 
         val debugStorePath = System.getenv("EDGEVISION_DEBUG_STORE_FILE")
+            ?: System.getenv("ANDROIDCLEAR_DEBUG_STORE_FILE")
         if (!debugStorePath.isNullOrBlank()) {
             create("ciDebug") {
                 storeFile = file(debugStorePath)
-                storePassword = System.getenv("EDGEVISION_DEBUG_STORE_PASSWORD") ?: "android"
-                keyAlias = System.getenv("EDGEVISION_DEBUG_KEY_ALIAS") ?: "androiddebugkey"
-                keyPassword = System.getenv("EDGEVISION_DEBUG_KEY_PASSWORD") ?: "android"
+                storePassword = System.getenv("EDGEVISION_DEBUG_STORE_PASSWORD")
+                    ?: System.getenv("ANDROIDCLEAR_DEBUG_STORE_PASSWORD") ?: "android"
+                keyAlias = System.getenv("EDGEVISION_DEBUG_KEY_ALIAS")
+                    ?: System.getenv("ANDROIDCLEAR_DEBUG_KEY_ALIAS")
+                    ?: "androiddebugkey"
+                keyPassword = System.getenv("EDGEVISION_DEBUG_KEY_PASSWORD")
+                    ?: System.getenv("ANDROIDCLEAR_DEBUG_KEY_PASSWORD")
+                    ?: "android"
             }
         }
     }
@@ -85,7 +97,14 @@ android {
             // Only the release keystore signs a release build. Falling back to the
             // debug key produces an APK that no store build can upgrade, and does it
             // silently, so the opt-in below is required for a local debug-signed build.
-            signingConfig = signingConfigs.findByName("release")
+            // The `-PallowDebugReleaseSigning=true` gradle flag enables this fallback.
+            signingConfig = if (project.hasProperty("allowDebugReleaseSigning")) {
+                signingConfigs.findByName("release")
+                    ?: signingConfigs.findByName("ciDebug")
+                    ?: signingConfigs.getByName("debug")
+            } else {
+                signingConfigs.findByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

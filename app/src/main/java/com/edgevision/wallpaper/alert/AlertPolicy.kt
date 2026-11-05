@@ -5,6 +5,7 @@ data class AlertDecision(
     val audio: Boolean,
     val haptic: Boolean,
     val spoken: Boolean,
+    val forceAudio: Boolean = false,
 )
 
 object AlertPolicy {
