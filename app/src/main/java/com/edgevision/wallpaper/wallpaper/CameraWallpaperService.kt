@@ -74,7 +74,121 @@ class CameraWallpaperService : WallpaperService() {
 
         private var pulseScheduled = false
 
-        private val drainRunnable = Runnable { drainLatestFrame() }
+        private var captureArmed = false
+
+        /** Triple-tap gesture state tracking */
+        private var tapCount = 0
+        private var lastTapTime = 0L
+
+        private val doubleTapInterval = 300L
+
+        /** A camera problem explains missing detections by itself, so it wins. */
+        private var cameraNotice: String? = null
+        private var detectionNotice: String? = null
+
+        @Volatile
+        private var engineVisible = false
+
+        private var pulseScheduled = false
+
+        private var captureInProgress = false
+
+        /** The gesture handler for triple-tap to toggle capture mode */
+        private val gestureDetector = GestureDetectorCompat(this@CameraWallpaperService, object : GestureDetector.OnGestureListener {
+            override fun onDown(e: MotionEvent?): Boolean = true
+
+            override fun onSingleTapUp(e: MotionEvent?): Boolean {
+                return true
+            }
+
+            override fun onSingleTapConfirmed(e: MotionEvent?): Boolean {
+                return true
+            }
+
+            override fun onDoubleTap(e: MotionEvent?): Boolean {
+                return true
+            }
+
+            override fun onDoubleTapEvent(e: MotionEvent?) {
+            }
+
+            override fun onDownEvent(e: MotionEvent?) {
+            }
+
+            override fun onUpEvent(e: MotionEvent?) {
+            }
+
+            override fun onScroll(e: MotionEvent?, e1: MotionEvent?, dx: Float, dy: Float): Boolean {
+                return false
+            }
+
+            override fun onTouchEvent(e: MotionEvent?): Boolean {
+                if (e?.action == MotionEvent.ACTION_DOWN) {
+                    val now = SystemClock.uptimeMillis()
+                    if (now - lastTapTime < doubleTapInterval) {
+                        tapCount++
+                    } else {
+                        tapCount = 0
+                    }
+                    lastTapTime = now
+
+                    if (tapCount >= 3) {
+                        // Triple-tap: toggle capture mode
+                        captureArmed = !captureArmed
+                        tapCount = 0
+                        lastTapTime = 0L
+                        mainHandler.post { refreshCaptureStatus() }
+                        return true
+                    }
+                }
+                if (e?.action == MotionEvent.ACTION_LONG_PRESS) {
+                    // Long-press: deactivate and change wallpaper (revert to default)
+                    val intent = Intent(ACTION_SET_WALLPAPER)
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(intent)
+                    return true
+                }
+                return false
+            }
+        })
+
+        private fun refreshCaptureStatus() {
+            if (captureArmed) {
+                captureStatusText = getString(R.string.wallpaper_status_capture_armed)
+                captureArmedAlpha.set(1f)
+                mainHandler.removeCallbacks(captureFadeRunnable)
+                mainHandler.post(captureFadeRunnable)
+            } else {
+                captureStatusText = getString(R.string.wallpaper_status_capture_disarmed)
+                captureArmedAlpha.set(0f)
+                mainHandler.removeCallbacks(captureFadeRunnable)
+            }
+            mainHandler.post { refreshNotice() }
+        }
+
+        private val captureFadeRunnable = object : Runnable {
+            override fun run() {
+                val current = captureArmedAlpha.get()
+                if (current > 0f) {
+                    captureArmedAlpha.set(current - 0.05f)
+                    mainHandler.postDelayed(this, 16L)
+                } else {
+                    captureArmedAlpha.set(0f)
+                    captureArmed = false
+                }
+            }
+        }
+
+        private val powerSaveReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                applyLoadProfile()
+            }
+        }
+
+        private val captureStatusText = AtomicReference<String?>(null)
+
+        /** Alpha fades from 1.0 to 0.0 over 2000ms after captureArmed toggles. */
+        private val captureArmedAlpha = AtomicFloat(1f)
 
         private val powerSaveReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
@@ -381,5 +495,6 @@ class CameraWallpaperService : WallpaperService() {
         const val TAG = "CameraWallpaper"
         const val PULSE_INTERVAL_MS = 66L
         const val METRICS_INTERVAL_MS = 5_000L
+        const val ACTION_SET_WALLPAPER = "android.settings.WALLPAPER_SETTINGS"
     }
 }

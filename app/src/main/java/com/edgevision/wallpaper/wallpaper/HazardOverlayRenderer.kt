@@ -59,6 +59,12 @@ class HazardOverlayRenderer(
     private var hazardUntilMs = 0L
     private var visualAlertEnabled = false
     private var notice: String? = null
+    /** True when capture mode is armed; drives the transient red-dot indicator. */
+    private var captureArmed = false
+    /** Timestamp when captureArmed was last toggled, for fade-out animation. */
+    private var captureArmedUntilMs = 0L
+    /** Alpha of the red-dot indicator, animated from 1.0 to 0.0 over 2000ms. */
+    private var captureArmedAlpha = 0f
 
     fun attach(surfaceHolder: SurfaceHolder) {
         holder = surfaceHolder
@@ -135,12 +141,39 @@ class HazardOverlayRenderer(
             if (visualAlertEnabled && nowMs < hazardUntilMs) {
                 drawHazardBorder(canvas, nowMs)
             }
+
+            // Draw transient capture-armed indicator (red dot/slashed icon fading over 2000ms)
+            if (captureArmed && nowMs < captureArmedUntilMs) {
+                val alpha = captureArmedAlpha * 255f
+                drawCaptureIndicator(canvas, nowMs, alpha.coerceAt(0f, 255f).toInt())
+            }
             notice?.let { text -> drawNotice(canvas, text) }
         } finally {
             runCatching { surfaceHolder.unlockCanvasAndPost(canvas) }
         }
         return SystemClock.elapsedRealtime() - startedAt
     }
+
+    /** Updates the capture-armed state.
+     *  Must be called from the wallpaper's main thread.
+     *  The alpha fade-out over 2000ms is handled by the service.
+     */
+    fun updateCaptureArmed(armed: Boolean, nowMs: Long) {
+        captureArmed = armed
+        if (armed) {
+            captureArmedAlpha = 1f
+            captureArmedUntilMs = nowMs + 2000L
+        } else {
+            captureArmedAlpha = 0f
+            captureArmedUntilMs = 0L
+        }
+    }
+
+    private companion object {
+        val BORDER_COLOR = Color.rgb(255, 69, 58)
+        const val HAZARD_HOLD_MS = 1_400L
+    }
+}
 
     private fun drawPreview(canvas: Canvas, bitmap: Bitmap) {
         if (bitmap.isRecycled || canvas.width == 0 || canvas.height == 0) return
@@ -230,6 +263,37 @@ class HazardOverlayRenderer(
         }
         if (current.isNotEmpty()) lines += current.toString()
         return lines
+    }
+
+    /** Draws a transient red-dot or slashed-icon indicator for capture-armed state.
+     *  Alpha animates from 1.0 to 0.0 over 2000ms once captureArmed is set.
+     */
+    private fun drawCaptureIndicator(canvas: Canvas, nowMs: Long, alpha: Int) {
+        val size = 40f * density
+        val margin = 20f * density
+        val x = canvas.width - size - margin
+        val y = size + margin
+
+        // Draw outer circle (red when armed)
+        val circlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.RED
+            alpha = alpha
+            style = Paint.Style.STROKE
+            strokeWidth = 4f * density
+        }
+        canvas.drawCircle(x + size / 2f, y + size / 2f, size / 2f, circlePaint)
+
+        // Draw slashed line when armed (indicating capture mode)
+        if (captureArmed) {
+            val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.WHITE
+                alpha = alpha
+                strokeWidth = 4f * density
+            }
+            val inset = size / 5f
+            canvas.drawLine(x + inset, y + inset, x + size - inset, y + size - inset, linePaint)
+            canvas.drawLine(x + inset, y + size - inset, x + size - inset, y + inset, linePaint)
+        }
     }
 
     private companion object {
