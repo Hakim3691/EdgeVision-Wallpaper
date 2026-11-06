@@ -27,7 +27,7 @@ Gradle 8.9 wrapper, Python 3.12.3, Linux x86_64.
 
 | Artifact | Size |
 | --- | --- |
-| `app-arm64-v8a-debug.apk` | 37,215,578 bytes / 35.49 MiB |
+| `app-arm64-v8a-debug.apk` | 36,219,538 bytes / 34.54 MiB |
 | `app-arm64-v8a-release.apk` | 35,081,676 bytes / 33.46 MiB |
 
 ABIs packaged: `arm64-v8a` only.
@@ -204,7 +204,7 @@ performance mode, each clamped on read and write.
 
 ## Size
 
-Debug 35.49 MiB, release 33.46 MiB. The dominant weight is the Chaquopy Python
+Debug 34.54 MiB, release 33.46 MiB. The dominant weight is the Chaquopy Python
 runtime (`libpython` + `libcrypto` + `libssl` + `libsqlite3` + stdlib ≈ 19 MB),
 followed by the 4.56 MB TFLite model and the TFLite JNI library. There is no
 padding, dummy asset or duplicate ABI. Removing Chaquopy in favour of the Kotlin
