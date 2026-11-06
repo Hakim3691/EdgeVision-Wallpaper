@@ -25,3 +25,6 @@ gradle/wrapper/gradle-wrapper.jar
 .venv/
 __pycache__/
 *.pyc
+
+# Generated build artifacts and hand-off bundles
+artifacts/
