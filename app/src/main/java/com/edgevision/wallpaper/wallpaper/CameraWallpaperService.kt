@@ -246,15 +246,7 @@ class CameraWallpaperService : WallpaperService() {
         }
 
         override fun onFrame(frame: ConvertedFrame) {
-            if (!engineVisible) {
-                frame.preview.recycle()
-                return
-            }
             mainHandler.post {
-                if (!engineVisible) {
-                    frame.preview.recycle()
-                    return@post
-                }
                 renderer.onFrame(frame.preview, frame.rotationDegrees)
             }
             inferenceEngine?.submitFrame(frame.detectionRgb)
