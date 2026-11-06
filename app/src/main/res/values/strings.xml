@@ -33,6 +33,25 @@
     <string name="opacity_value">%1$d%%</string>
     <string name="opacity_description">Controls how strongly the camera preview shows through your home screen.</string>
 
+    <string name="capture_heading">Threat capture</string>
+    <string name="capture_armed_title">Automatic threat capture</string>
+    <string name="capture_armed_description">When armed, a confirmed hazard saves a JPEG burst to Pictures/Android Clear/Threat Captures. Three quick taps on the home screen arm it for a few seconds.</string>
+    <string name="grant_storage">Grant storage access</string>
+
+    <string name="burst_shots_title">Images per burst</string>
+    <string name="burst_shots_value">%1$d images</string>
+    <string name="burst_interval_title">Gap between images</string>
+    <string name="burst_interval_value">%1$d ms</string>
+    <string name="capture_cooldown_title">Cooldown between bursts</string>
+    <string name="capture_cooldown_value">%1$d s</string>
+
+    <string name="performance_title">Detection cadence</string>
+    <string name="performance_description">Slower cadences use less battery. Detection always stays on.</string>
+    <string name="performance_mode_automatic">Auto</string>
+    <string name="performance_mode_battery_saver">Battery</string>
+    <string name="performance_mode_balanced">Balanced</string>
+    <string name="performance_mode_performance">Fast</string>
+
     <string name="privacy_note">Detection runs locally with a bundled EfficientDet-Lite0 model. No images or detections are uploaded.</string>
     <string name="safety_note">Safety notice: this is an assistive prototype, not a certified mobility or driving aid. Never rely on it to avoid traffic or other hazards.</string>
     <string name="blind_mode_fixed_alerts">Blind Assist always uses sound and vibration.</string>

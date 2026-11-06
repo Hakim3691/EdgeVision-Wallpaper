@@ -17,7 +17,7 @@ Gradle 8.9 wrapper, Python 3.12.3, Linux x86_64.
 ```
 
 - `:app:assembleDebug` — **BUILD SUCCESSFUL**.
-- `:app:testDebugUnitTest` — **69 tests, 13 classes, 0 failures, 0 errors**.
+- `:app:testDebugUnitTest` — **71 tests, 13 classes, 0 failures, 0 errors**.
   Eight of those classes are executable Given/When/Then specifications and
   account for 46 of the tests.
 - `:app:assembleRelease` — **BUILD SUCCESSFUL**, with and without
@@ -27,8 +27,8 @@ Gradle 8.9 wrapper, Python 3.12.3, Linux x86_64.
 
 | Artifact | Size |
 | --- | --- |
-| `app-arm64-v8a-debug.apk` | 37,208,062 bytes / 35.48 MiB |
-| `app-arm64-v8a-release.apk` | 35,073,620 bytes / 33.45 MiB |
+| `app-arm64-v8a-debug.apk` | 37,215,578 bytes / 35.49 MiB |
+| `app-arm64-v8a-release.apk` | 35,081,676 bytes / 33.46 MiB |
 
 ABIs packaged: `arm64-v8a` only.
 
@@ -204,7 +204,7 @@ performance mode, each clamped on read and write.
 
 ## Size
 
-Debug 35.48 MiB, release 33.45 MiB. The dominant weight is the Chaquopy Python
+Debug 35.49 MiB, release 33.46 MiB. The dominant weight is the Chaquopy Python
 runtime (`libpython` + `libcrypto` + `libssl` + `libsqlite3` + stdlib ≈ 19 MB),
 followed by the 4.56 MB TFLite model and the TFLite JNI library. There is no
 padding, dummy asset or duplicate ABI. Removing Chaquopy in favour of the Kotlin
@@ -212,10 +212,23 @@ TFLite interpreter is the single legitimate size lever; it must be done with a
 working Kotlin detector, not by deleting the Python pipeline and silently losing
 detection. The 40 MiB CI check is a regression gate, not a functional target.
 
+## Capture and cadence settings screen
+
+The settings activity now exposes the persisted capture contract the service
+reads: arm/disarm automatic capture, images per burst (1–5), gap between images,
+cooldown between bursts, and the detection-cadence mode (Auto / Battery /
+Balanced / Fast). Values are clamped by `AssistSettings` as before. On API 28 and
+below a "Grant storage access" button appears when the legacy write permission is
+missing, because capture cannot store anything there without it (API 29+ needs no
+storage permission). `MainActivityEspressoTest` (Robolectric) toggles the arming
+switch and selects Battery mode, asserting both reach `AssistSettings` — the same
+values the wallpaper engine reads when it next builds its capture controller.
+
 ## Still not implemented
 
-1. **Capture/settings UI.** Manual capture exists in the controller and runner but
-   no UI triggers it, and there is no gallery or history screen.
+1. **Manual capture trigger.** Manual bursts exist in the controller and runner
+   (`onManualRequest`) but no UI or gesture invokes one, and there is no gallery
+   or history screen.
 2. **Low-latency display path.** The preview still goes Camera2 → `YUV_420_888` →
    Bitmap → software canvas. No `SurfaceTexture`/EGL path, and no latency
    comparison has been measured, because no camera is available.
@@ -230,8 +243,8 @@ detection. The 40 MiB CI check is a regression gate, not a functional target.
 Threat capture is now wired: the service asks Camera2 for real JPEGs, stores them
 through an injectable MediaStore sink with correct path/MIME/name/date and
 `IS_PENDING` cleanup, sequences bursts through the existing admission controller,
-arms from a pure triple-tap gesture, and drives the live detection cadence from
-the performance governor. Debug, unit specifications and release all pass in this
+arms from a pure triple-tap gesture, exposes the capture and cadence settings the
+engine reads, and drives the live detection cadence from the performance governor. Debug, unit specifications and release all pass in this
 environment. What cannot be claimed is that a physical phone has produced and
 saved a photo: that requires hardware, and the behaviours listed above as
 device-dependent are exactly the ones this environment cannot execute.
