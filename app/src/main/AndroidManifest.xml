@@ -3,6 +3,11 @@
 
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Burst captures use MediaStore. Scoped storage on API 29+ needs no storage
+         permission; legacy devices still require the write grant. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
 
     <uses-feature
         android:name="android.hardware.camera"

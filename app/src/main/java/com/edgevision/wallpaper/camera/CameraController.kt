@@ -57,6 +57,60 @@ class CameraController(
     private var continuousAfSupported = false
     private var lastProcessedAtMs = 0L
 
+    /** JPEG output for burst capture, added to the same session as the preview. */
+    private var jpegReader: ImageReader? = null
+    private var pendingJpeg: ((ByteArray?) -> Unit)? = null
+
+    /** Detection cadence, driven by the performance governor. */
+    @Volatile
+    private var frameIntervalMs = FRAME_INTERVAL_MS
+
+    /**
+     * Applies the interval chosen by [com.edgevision.wallpaper.diagnostics.PerformanceController].
+     * Detection is throttled, never disabled: the slowest profile still detects.
+     */
+    fun setDetectionIntervalMs(intervalMs: Long) {
+        frameIntervalMs = intervalMs.coerceAtLeast(16L)
+    }
+
+    /**
+     * Requests one JPEG from the running session. The callback receives null when
+     * the session is gone, so a burst aborts instead of hanging.
+     */
+    fun captureJpeg(onCaptured: (ByteArray?) -> Unit) {
+        if (!running) {
+            onCaptured(null)
+            return
+        }
+        cameraHandler.post {
+            val session = synchronized(lock) { captureSession }
+            val reader = synchronized(lock) { jpegReader }
+            val device = synchronized(lock) { cameraDevice }
+            if (!running || session == null || reader == null || device == null) {
+                onCaptured(null)
+                return@post
+            }
+            synchronized(lock) { pendingJpeg = onCaptured }
+            try {
+                val request = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                    addTarget(reader.surface)
+                    set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+                    if (continuousAfSupported) {
+                        set(
+                            CaptureRequest.CONTROL_AF_MODE,
+                            CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE,
+                        )
+                    }
+                }.build()
+                session.capture(request, null, cameraHandler)
+            } catch (throwable: Throwable) {
+                synchronized(lock) { pendingJpeg = null }
+                Log.w(TAG, "Still capture failed", throwable)
+                onCaptured(null)
+            }
+        }
+    }
+
     @Synchronized
     fun start() {
         if (running) return
@@ -104,6 +158,11 @@ class CameraController(
                 runCatching { reader.close() }
             }
             imageReader = null
+            jpegReader?.let { reader ->
+                runCatching { reader.setOnImageAvailableListener(null, null) }
+                runCatching { reader.close() }
+            }
+            jpegReader = null
         }
     }
 
@@ -154,6 +213,16 @@ class CameraController(
             )
             previewSize = size
 
+            val jpegSize = selectJpegSize(
+                streamConfiguration.getOutputSizes(ImageFormat.JPEG) ?: emptyArray(),
+                size,
+            )
+            val jpeg = ImageReader.newInstance(jpegSize.width, jpegSize.height, ImageFormat.JPEG, 2)
+            jpeg.setOnImageAvailableListener({ ready -> handleJpeg(ready) }, cameraHandler)
+            synchronized(lock) {
+                jpegReader = jpeg
+            }
+
             val reader = ImageReader.newInstance(
                 size.width,
                 size.height,
@@ -201,10 +270,16 @@ class CameraController(
             return
         }
 
+        val jpeg = synchronized(lock) { jpegReader }
+        val outputs = buildList {
+            add(reader.surface)
+            if (jpeg != null) add(jpeg.surface)
+        }
+
         try {
             @Suppress("DEPRECATION")
             camera.createCaptureSession(
-                listOf(reader.surface),
+                outputs,
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         if (!running) {
@@ -257,7 +332,7 @@ class CameraController(
     private fun handleImage(reader: ImageReader) {
         if (!running) return
         val now = SystemClock.elapsedRealtime()
-        if (now - lastProcessedAtMs < FRAME_INTERVAL_MS) return
+        if (now - lastProcessedAtMs < frameIntervalMs) return
 
         val image = try {
             reader.acquireLatestImage()
@@ -286,6 +361,39 @@ class CameraController(
                 Log.w(TAG, "Frame conversion failed", throwable)
             }
         }
+    }
+
+    private fun handleJpeg(reader: ImageReader) {
+        val image = try {
+            reader.acquireNextImage()
+        } catch (throwable: Throwable) {
+            null
+        } ?: return
+
+        val bytes = try {
+            image.use { frame ->
+                frame.planes.firstOrNull()?.buffer?.let { buffer ->
+                    ByteArray(buffer.remaining()).also { buffer.get(it) }
+                }
+            }
+        } catch (throwable: Throwable) {
+            Log.w(TAG, "Could not read JPEG bytes", throwable)
+            null
+        }
+
+        val callback = synchronized(lock) {
+            pendingJpeg.also { pendingJpeg = null }
+        }
+        callback?.invoke(bytes)
+    }
+
+    private fun selectJpegSize(sizes: Array<Size>, preview: Size): Size {
+        if (sizes.isEmpty()) return preview
+        return sizes
+            .filter { it.width <= preview.width && it.height <= preview.height }
+            .maxByOrNull { it.width.toLong() * it.height }
+            ?: sizes.minByOrNull { it.width.toLong() * it.height }
+            ?: preview
     }
 
     private fun rotationDegrees(): Int {
