@@ -4,21 +4,11 @@
     <string name="wallpaper_label">Android Clear</string>
     <string name="wallpaper_description">A transparent camera wallpaper that watches for nearby vehicles and obstacles, with on-device hazard alerts.</string>
 
-    <string name="wallpaper_notice_camera_permission">Camera access is off. Open Android Clear and allow camera access to start hazard detection.</string>
-    <string name="wallpaper_notice_no_camera">No camera was found on this device, so Android Clear cannot watch for hazards.</string>
-    <string name="wallpaper_notice_detection">Hazard detection is unavailable. Use Android Clear once to reload the detector, then return to the home screen.</string>
     <string name="title">Android Clear</string>
     <string name="subtitle">A transparent live wallpaper with on-device hazard awareness. Frames never leave your phone.</string>
 
     <string name="camera_status_granted">Camera permission granted</string>
     <string name="camera_status_missing">Camera permission required before detection can run</string>
-    <string name="threat_capture_armed">Threat capture armed</string>
-    <string name="threat_capture_disarmed">Threat capture disarmed</string>
-    <string name="threat_capture_burst_failed">Burst capture failed</string>
-    <string name="wallpaper_status_capture_armed">Capture mode: armed</string>
-    <string name="wallpaper_status_capture_disarmed">Capture mode: disarmed</string>
-    <string name="deactivate_wallpaper">Deactivate & change wallpaper</string>
-    <string name="wallpaper_picker_unavailable">No live wallpaper picker is available on this device.</string>
     <string name="wallpaper_status_active">Live wallpaper is active</string>
     <string name="wallpaper_status_inactive">Live wallpaper is not active yet</string>
     <string name="wallpaper_picker_unavailable">No live wallpaper picker is available on this device.</string>
@@ -27,7 +17,7 @@
     <string name="grant_camera">Grant camera access</string>
 
     <string name="setup_heading">Setup</string>
-    <string name="setup_help">Tap \"Set live wallpaper\", choose Edge Vision in the system picker, then return to the home screen. Camera capture stops automatically whenever the wallpaper is hidden.</string>
+    <string name="setup_help">Tap \"Set live wallpaper\", choose Android Clear in the system picker, then return to the home screen. Camera capture stops automatically whenever the wallpaper is hidden.</string>
 
     <string name="alerts_heading">Detection &amp; alerts</string>
     <string name="blind_assist_title">Blind Assist Mode</string>

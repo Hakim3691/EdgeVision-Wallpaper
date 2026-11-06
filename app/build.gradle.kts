@@ -36,8 +36,8 @@ android {
         applicationId = "com.edgevision.wallpaper"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.1.1"
+        versionCode = 1
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -52,35 +52,23 @@ android {
 
     signingConfigs {
         // CI passes these variables after provisioning keystores with keytool.
-        // Local development may use ANDROIDCLEAR_* names; CI always injects EDGEVISION_*.
         val releaseStorePath = System.getenv("EDGEVISION_RELEASE_STORE_FILE")
-            ?: System.getenv("ANDROIDCLEAR_RELEASE_STORE_FILE")
         if (!releaseStorePath.isNullOrBlank()) {
             create("release") {
                 storeFile = file(releaseStorePath)
                 storePassword = System.getenv("EDGEVISION_RELEASE_STORE_PASSWORD")
-                    ?: System.getenv("ANDROIDCLEAR_RELEASE_STORE_PASSWORD")
-                keyAlias = System.getenv("EDGEVISION_RELEASE_KEY_ALIAS")
-                    ?: System.getenv("ANDROIDCLEAR_RELEASE_KEY_ALIAS")
-                    ?: "androidclear"
+                keyAlias = System.getenv("EDGEVISION_RELEASE_KEY_ALIAS") ?: "edgevision"
                 keyPassword = System.getenv("EDGEVISION_RELEASE_KEY_PASSWORD")
-                    ?: System.getenv("ANDROIDCLEAR_RELEASE_KEY_PASSWORD")
             }
         }
 
         val debugStorePath = System.getenv("EDGEVISION_DEBUG_STORE_FILE")
-            ?: System.getenv("ANDROIDCLEAR_DEBUG_STORE_FILE")
         if (!debugStorePath.isNullOrBlank()) {
             create("ciDebug") {
                 storeFile = file(debugStorePath)
-                storePassword = System.getenv("EDGEVISION_DEBUG_STORE_PASSWORD")
-                    ?: System.getenv("ANDROIDCLEAR_DEBUG_STORE_PASSWORD") ?: "android"
-                keyAlias = System.getenv("EDGEVISION_DEBUG_KEY_ALIAS")
-                    ?: System.getenv("ANDROIDCLEAR_DEBUG_KEY_ALIAS")
-                    ?: "androiddebugkey"
-                keyPassword = System.getenv("EDGEVISION_DEBUG_KEY_PASSWORD")
-                    ?: System.getenv("ANDROIDCLEAR_DEBUG_KEY_PASSWORD")
-                    ?: "android"
+                storePassword = System.getenv("EDGEVISION_DEBUG_STORE_PASSWORD") ?: "android"
+                keyAlias = System.getenv("EDGEVISION_DEBUG_KEY_ALIAS") ?: "androiddebugkey"
+                keyPassword = System.getenv("EDGEVISION_DEBUG_KEY_PASSWORD") ?: "android"
             }
         }
     }
@@ -94,17 +82,10 @@ android {
         getByName("release") {
             isMinifyEnabled = false
             isShrinkResources = false
-            // Only the release keystore signs a release build. Falling back to the
-            // debug key produces an APK that no store build can upgrade, and does it
-            // silently, so the opt-in below is required for a local debug-signed build.
-            // The `-PallowDebugReleaseSigning=true` gradle flag enables this fallback.
-            signingConfig = if (project.hasProperty("allowDebugReleaseSigning")) {
-                signingConfigs.findByName("release")
-                    ?: signingConfigs.findByName("ciDebug")
-                    ?: signingConfigs.getByName("debug")
-            } else {
-                signingConfigs.findByName("release")
-            }
+            // Local release builds fall back to the debug key. CI always supplies
+            // EDGEVISION_RELEASE_* and therefore signs with the release keystore.
+            signingConfig = signingConfigs.findByName("release")
+                ?: signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -147,33 +128,6 @@ android {
             (this as? BaseVariantOutputImpl)?.outputFileName = "app-arm64-v8a-$variantName.apk"
         }
     }
-}
-
-// Shipping an APK called "release" that is signed with the debug key is a silent
-// trap: it installs fine, but no store build can upgrade it. Building one now has
-// to be asked for explicitly. The check lives in its own task, and the values it
-// needs are read inside that task so the configuration cache can serialize it.
-val verifyReleaseSigning = tasks.register("verifyReleaseSigning") {
-    val keystoreConfigured = System.getenv("EDGEVISION_RELEASE_STORE_FILE").isNullOrBlank().not()
-    val debugSigningAllowed = providers.gradleProperty("allowDebugReleaseSigning")
-        .orNull
-        .toBoolean()
-    doLast {
-        if (!keystoreConfigured && !debugSigningAllowed) {
-            throw GradleException(
-                "assembleRelease needs a release keystore: set EDGEVISION_RELEASE_STORE_FILE, " +
-                    "EDGEVISION_RELEASE_STORE_PASSWORD, EDGEVISION_RELEASE_KEY_ALIAS and " +
-                    "EDGEVISION_RELEASE_KEY_PASSWORD, or pass " +
-                    "-PallowDebugReleaseSigning=true for a locally installable " +
-                    "debug-signed build.",
-            )
-        }
-    }
-}
-
-// Fails a release build before it compiles anything.
-tasks.matching { it.name == "preReleaseBuild" }.configureEach {
-    dependsOn(verifyReleaseSigning)
 }
 
 chaquopy {

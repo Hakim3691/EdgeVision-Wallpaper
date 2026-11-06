@@ -78,24 +78,7 @@ class AlertCoordinator(context: Context) {
             if (!prepared || expectedGeneration != generation) return@post
             val now = SystemClock.elapsedRealtime()
 
-            // --- audio focus check: skip audio if DND is active or headset unplugged ---
-            val audioManager = appContext.getSystemService(AudioManager::class.java)
-            val dndActive = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.DoNotDisturb) {
-                audioManager.isInterruptionFilterBlocking(
-                    AudioManager.INTERRUPTION_FILTER_PRIORITY,
-                    null
-                )
-            } else {
-                audioManager.isMusicActive
-            }
-            val headsetPlugged = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                audioManager.isWiredHeadsetOn || audioManager.isBluetoothA2dpOn
-            } else {
-                audioManager.isHeadsetPlugged
-            }
-            val audioAllowed = !dndActive || decision.forceAudio
-
-            if (decision.audio && audioAllowed && now - lastToneAtMs >= TONE_COOLDOWN_MS) {
+            if (decision.audio && now - lastToneAtMs >= TONE_COOLDOWN_MS) {
                 lastToneAtMs = now
                 toneGenerator?.let { tone ->
                     val duration = if (decision.spoken) 220 else 140
@@ -103,10 +86,7 @@ class AlertCoordinator(context: Context) {
                 }
             }
 
-            // Skip haptic if DND is active and vibration mode is silenced
-            val hapticAllowed = if (dndActive) false else true
-
-            if (decision.haptic && hapticAllowed && now - lastHapticAtMs >= HAPTIC_COOLDOWN_MS) {
+            if (decision.haptic && now - lastHapticAtMs >= HAPTIC_COOLDOWN_MS) {
                 lastHapticAtMs = now
                 vibrate(blindPattern = decision.spoken)
             }

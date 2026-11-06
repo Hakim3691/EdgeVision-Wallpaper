@@ -1,2 +1,0 @@
-734d6b7c94d6c0e83a3e06a06ccc92d387886e63f15b6a5508f4727b052b8d69  artifacts/app-arm64-v8a-debug.apk
-1705e5033aa1eb73481ce4f2e49cffc9b8e61f9dec272779bc6bddd289de03cb  artifacts/app-arm64-v8a-release.apk

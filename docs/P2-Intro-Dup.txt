@@ -1,2 +1,0 @@
-P2 Development - Duplicate Intro Management
-This feature allows duplicating intro sequences for better testing.

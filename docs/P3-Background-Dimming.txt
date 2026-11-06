@@ -1,2 +1,0 @@
-P3 Development - Background Dimming
-Implement background dimming when notifications are hidden.

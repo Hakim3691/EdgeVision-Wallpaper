@@ -6,15 +6,10 @@ interface EngineResource {
 }
 
 /**
- * Drives hardware and inference from three independent inputs: wallpaper
- * visibility, surface availability, and whether the screen is interactive. None
- * of them is trustworthy alone (the launcher can hide the wallpaper while the
- * surface still exists, and vice versa), so the controller reconciles all three
- * and only runs resources when all are true.
- *
- * The screen-off input matters for battery: a wallpaper can stay "visible" behind
- * the keyguard on some OEM builds, and camera plus inference behind a dark screen
- * costs power for nobody.
+ * Drives hardware and inference from two independent inputs: wallpaper visibility
+ * and surface availability. Neither is trustworthy alone (the launcher can hide
+ * the wallpaper while the surface still exists, and vice versa), so the
+ * controller reconciles both and only runs resources when both are true.
  *
  * The class is deliberately Android-free so the Gherkin visibility scenarios can
  * be tested with fakes on both the JVM and an instrumented device.
@@ -29,15 +24,11 @@ class WallpaperEngineController(
         IDLE,
         VISIBLE,
         HIDDEN,
-
-        /** Visible with a surface, but the screen is off. */
-        PAUSED,
         DESTROYED,
     }
 
     private var visible = false
     private var surfaceAvailable = false
-    private var interactive = true
     private var resourcesRunning = false
     private var destroyed = false
 
@@ -60,13 +51,6 @@ class WallpaperEngineController(
     }
 
     @Synchronized
-    fun onInteractiveChanged(isInteractive: Boolean) {
-        if (destroyed) return
-        interactive = isInteractive
-        reconcile()
-    }
-
-    @Synchronized
     fun destroy() {
         if (destroyed) return
         destroyed = true
@@ -80,7 +64,7 @@ class WallpaperEngineController(
 
     private fun reconcile() {
         if (destroyed) return
-        val shouldRun = visible && surfaceAvailable && interactive
+        val shouldRun = visible && surfaceAvailable
         if (shouldRun && !resourcesRunning) {
             try {
                 camera.start()
@@ -96,16 +80,10 @@ class WallpaperEngineController(
             }
         } else if (!shouldRun && resourcesRunning) {
             stopResources()
-            state = stoppedState()
+            state = if (visible) State.IDLE else State.HIDDEN
         } else if (!shouldRun) {
-            state = stoppedState()
+            state = if (visible) State.IDLE else State.HIDDEN
         }
-    }
-
-    private fun stoppedState(): State = when {
-        !visible -> State.HIDDEN
-        !interactive -> State.PAUSED
-        else -> State.IDLE
     }
 
     private fun stopResources() {
