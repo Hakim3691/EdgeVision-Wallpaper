@@ -73,7 +73,7 @@ class CameraWallpaperService : WallpaperService() {
         private var engineVisible = false
 
         private var pulseScheduled = false
-        private var frameSeq = 0
+        private var lastFrameMs = 0L
         private val pulseRunnable = object : Runnable {
             override fun run() {
                 if (!pulseScheduled) return
@@ -269,9 +269,11 @@ class CameraWallpaperService : WallpaperService() {
         }
 
         override fun onFrame(frame: ConvertedFrame) {
-            // Throttle rendering to every 2 frames to reduce main thread load
-            // and prevent the live view from lagging behind real camera preview.
-            if (frameSeq++ % 2 != 0) return
+            // Time-based throttle: only render if at least 33ms has passed since last render.
+            // This reduces main thread load without causing frame drops/jumps.
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastFrameMs < 33L) return
+            lastFrameMs = now
             mainHandler.post {
                 renderer.onFrame(frame.preview, frame.rotationDegrees)
             }
