@@ -3,11 +3,16 @@ package com.edgevision.wallpaper
 import android.Manifest
 import android.app.WallpaperManager
 import android.content.ComponentName
+import android.content.DialogInterface
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
+import android.widget.CheckBox
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -16,17 +21,27 @@ import com.edgevision.wallpaper.accessibility.AssistModeResolver
 import com.edgevision.wallpaper.databinding.ActivityMainBinding
 import com.edgevision.wallpaper.diagnostics.PerformanceMode
 import com.edgevision.wallpaper.diagnostics.PipelineDiagnostics
+import com.edgevision.wallpaper.legal.LegalActivity
 import com.edgevision.wallpaper.settings.AssistSettings
 import com.edgevision.wallpaper.wallpaper.CameraWallpaperService
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var settings: AssistSettings
 
+    /** Guards the capture switch while the safety acknowledgement is pending. */
+    private var suppressCaptureToggle = false
+
     private val requestCameraPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
-    ) { refreshStatus() }
+    ) { granted ->
+        refreshStatus()
+        if (!granted && !shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)) {
+            showCameraSettingsFallback()
+        }
+    }
 
     private val requestStoragePermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -61,8 +76,18 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.btnGrantCamera.setOnClickListener {
-            requestCameraPermission.launch(Manifest.permission.CAMERA)
+            if (hasCameraPermission()) {
+                refreshStatus()
+            } else {
+                // Prominent in-app disclosure before the system permission prompt.
+                showCameraRationale()
+            }
         }
+        binding.btnDismissPowerNotice.setOnClickListener {
+            settings.powerNoticeDismissed = true
+            binding.cardPowerLimit.isVisible = false
+        }
+        binding.btnOpenBatterySettings.setOnClickListener { openAppSettings() }
         binding.btnSetWallpaper.setOnClickListener {
             openLiveWallpaperPicker()
         }
@@ -71,8 +96,21 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Capture settings are read by the wallpaper engine; this screen only
-        // persists them and shows the current values.
-        binding.switchCaptureArmed.setOnCheckedChangeListener { _, checked ->
+        // persists them and shows the current values. Turning capture on for the
+        // first time requires the safety acknowledgement, so the switch reverts
+        // until the user accepts it.
+        binding.switchCaptureArmed.setOnCheckedChangeListener { button, checked ->
+            if (suppressCaptureToggle) return@setOnCheckedChangeListener
+            if (checked && !settings.safetyNoticeAccepted) {
+                suppressCaptureToggle = true
+                button.isChecked = false
+                suppressCaptureToggle = false
+                showSafetyNotice {
+                    settings.captureEnabled = true
+                    refreshCaptureUi()
+                }
+                return@setOnCheckedChangeListener
+            }
             settings.captureEnabled = checked
         }
         binding.sliderBurstShots.addOnChangeListener { _, value, _ ->
@@ -92,7 +130,12 @@ class MainActivity : AppCompatActivity() {
             modeForButton(checkedId)?.let { settings.performanceMode = it }
         }
 
+        binding.btnAboutLegal.setOnClickListener {
+            startActivity(Intent(this, LegalActivity::class.java))
+        }
+
         updateBlindModeUi()
+        maybeShowLegalOnboarding()
     }
 
     override fun onResume() {
@@ -124,6 +167,8 @@ class MainActivity : AppCompatActivity() {
         )
         binding.tvAccessibilityNote.isVisible = autoBlindMode
         binding.tvPipelineStatus.text = PipelineDiagnostics.summary()
+        binding.cardPowerLimit.isVisible =
+            isPowerSaveMode() && !settings.powerNoticeDismissed
 
         refreshCaptureUi()
     }
@@ -213,6 +258,84 @@ class MainActivity : AppCompatActivity() {
         if (!opened) {
             binding.tvWallpaperStatus.text = getString(R.string.wallpaper_picker_unavailable)
         }
+    }
+
+    private fun hasCameraPermission(): Boolean = ContextCompat.checkSelfPermission(
+        this,
+        Manifest.permission.CAMERA,
+    ) == PackageManager.PERMISSION_GRANTED
+
+    private fun isPowerSaveMode(): Boolean =
+        getSystemService(PowerManager::class.java)?.isPowerSaveMode == true
+
+    private fun openAppSettings() {
+        val intent = Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.fromParts("package", packageName, null),
+        )
+        runCatching { startActivity(intent) }
+    }
+
+    private fun showCameraRationale() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.camera_rationale_title)
+            .setMessage(R.string.camera_rationale_body)
+            .setPositiveButton(R.string.camera_rationale_grant) { _, _ ->
+                requestCameraPermission.launch(Manifest.permission.CAMERA)
+            }
+            .setNegativeButton(R.string.action_not_now, null)
+            .show()
+    }
+
+    private fun showCameraSettingsFallback() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.camera_settings_title)
+            .setMessage(R.string.camera_settings_body)
+            .setPositiveButton(R.string.action_open_settings) { _, _ -> openAppSettings() }
+            .setNegativeButton(R.string.action_cancel, null)
+            .show()
+    }
+
+    /** First-run AI disclosure, then the safety acknowledgement if still pending. */
+    private fun maybeShowLegalOnboarding() {
+        if (settings.aiDisclosureSeen) return
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.ai_disclosure_title)
+            .setMessage(R.string.ai_disclosure_dialog_body)
+            .setCancelable(false)
+            .setPositiveButton(R.string.action_understand) { _, _ ->
+                settings.aiDisclosureSeen = true
+                if (!settings.safetyNoticeAccepted) showSafetyNotice()
+            }
+            .setNeutralButton(R.string.action_read_more) { _, _ ->
+                settings.aiDisclosureSeen = true
+                startActivity(Intent(this, LegalActivity::class.java))
+                if (!settings.safetyNoticeAccepted) showSafetyNotice()
+            }
+            .show()
+    }
+
+    private fun showSafetyNotice(onAccepted: (() -> Unit)? = null) {
+        val content = layoutInflater.inflate(R.layout.dialog_safety_ack, null)
+        val acknowledge = content.findViewById<CheckBox>(R.id.check_acknowledge)
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.safety_dialog_title)
+            .setView(content)
+            .setPositiveButton(R.string.safety_accept, null)
+            .setNegativeButton(R.string.action_cancel, null)
+            .create()
+
+        dialog.setOnShowListener {
+            val positive = dialog.getButton(DialogInterface.BUTTON_POSITIVE)
+            positive.isEnabled = acknowledge.isChecked
+            acknowledge.setOnCheckedChangeListener { _, checked -> positive.isEnabled = checked }
+            positive.setOnClickListener {
+                settings.safetyNoticeAccepted = true
+                dialog.dismiss()
+                onAccepted?.invoke()
+            }
+        }
+        dialog.show()
     }
 
     private companion object {

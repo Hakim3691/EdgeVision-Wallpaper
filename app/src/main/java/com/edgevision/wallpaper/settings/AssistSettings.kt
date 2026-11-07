@@ -67,6 +67,32 @@ class AssistSettings(context: Context) {
             captureEnabled = value
         }
 
+    /**
+     * Whether the first-run AI detection disclosure has been acknowledged.
+     *
+     * Consent is stored separately from feature settings so that clearing an
+     * unrelated switch can never implicitly re-consent or un-consent the user.
+     */
+    var aiDisclosureSeen: Boolean
+        get() = prefs.getBoolean(KEY_AI_DISCLOSURE_SEEN, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_AI_DISCLOSURE_SEEN, value).apply()
+        }
+
+    /** Required before automatic threat capture can be enabled for the first time. */
+    var safetyNoticeAccepted: Boolean
+        get() = prefs.getBoolean(KEY_SAFETY_ACCEPTED, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_SAFETY_ACCEPTED, value).apply()
+        }
+
+    /** Hides the battery-saver banner until it is shown again after being dismissed. */
+    var powerNoticeDismissed: Boolean
+        get() = prefs.getBoolean(KEY_POWER_NOTICE_DISMISSED, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_POWER_NOTICE_DISMISSED, value).apply()
+        }
+
     fun registerListener(listener: SharedPreferences.OnSharedPreferenceChangeListener) {
         prefs.registerOnSharedPreferenceChangeListener(listener)
     }
@@ -125,6 +151,9 @@ class AssistSettings(context: Context) {
         const val KEY_BURST_INTERVAL_MS = "burst_interval_ms"
         const val KEY_CAPTURE_COOLDOWN_MS = "capture_cooldown_ms"
         const val KEY_PERFORMANCE_MODE = "performance_mode"
+        const val KEY_AI_DISCLOSURE_SEEN = "legal_ai_disclosure_seen"
+        const val KEY_SAFETY_ACCEPTED = "legal_safety_accepted"
+        const val KEY_POWER_NOTICE_DISMISSED = "power_notice_dismissed"
 
         const val MIN_OVERLAY_OPACITY = 20
         const val MAX_OVERLAY_OPACITY = 100

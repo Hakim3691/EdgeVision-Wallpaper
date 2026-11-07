@@ -1,0 +1,23 @@
+PERFORMANCE & BACKGROUND LIMITS
+
+Real-time continuous analysis requires significant processing power and camera
+resources. Running Android Clear for extended periods may increase battery
+consumption and warm the device.
+
+Android may pause or restrict background processing when the device enters
+battery-saver mode or when memory is low. Android 11 and later also apply
+while-in-use restrictions to the camera, and some manufacturers deny camera access
+to wallpaper processes entirely.
+
+What the app does about it:
+- the camera is released whenever the screen is off or the lock screen is
+  showing, and detection resumes when you unlock;
+- the live preview and the detection model run at independent rates, so the
+  wallpaper stays smooth without running inference on every frame;
+- if the camera cannot be opened, the app retries with increasing delays instead
+  of failing permanently.
+
+The settings screen shows the live pipeline status, including the camera state
+and the last error, so a restriction is visible rather than silent. If the status
+reads camera=error, check your manufacturer's battery and background-app
+settings for Android Clear, or open the app once and return to the home screen.

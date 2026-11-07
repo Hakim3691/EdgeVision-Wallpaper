@@ -57,4 +57,38 @@
     <string name="privacy_note">Detection runs locally with a bundled EfficientDet-Lite0 model. No images or detections are uploaded.</string>
     <string name="safety_note">Safety notice: this is an assistive prototype, not a certified mobility or driving aid. Never rely on it to avoid traffic or other hazards.</string>
     <string name="blind_mode_fixed_alerts">Blind Assist always uses sound and vibration.</string>
+
+    <!-- Legal: About & Legal screen, first-run disclosure and permission rationale. -->
+    <string name="legal_heading">About &amp; Legal</string>
+    <string name="legal_button">About &amp; Legal</string>
+    <string name="legal_intro">These documents apply to Android Clear 1.4.0 and later. The full text ships inside the app and is readable offline.</string>
+    <string name="legal_doc_ai">AI Detection Disclosure</string>
+    <string name="legal_doc_safety">Safety &amp; Emergency Notice</string>
+    <string name="legal_doc_performance">Performance &amp; Background Limits</string>
+    <string name="legal_doc_privacy">Privacy Policy</string>
+    <string name="legal_doc_terms">Terms &amp; Conditions</string>
+    <string name="legal_document_unavailable">This document could not be loaded.</string>
+
+    <string name="ai_disclosure_title">How AI Detection Works</string>
+    <string name="ai_disclosure_dialog_body">Android Clear uses an on-device machine-learning model to identify environmental hazards in real time.\n\nDetection is probabilistic and may not identify every obstacle. Weather, poor lighting, lens obstructions and sudden movement can reduce accuracy.\n\nThe app assists your awareness; it does not replace your judgement or any safety equipment. Always rely on visual verification and personal discretion.</string>
+    <string name="action_understand">I Understand</string>
+    <string name="action_read_more">Read full disclosure</string>
+
+    <string name="safety_dialog_title">Safety &amp; Emergency Notice</string>
+    <string name="safety_dialog_body">Android Clear is an informational tool, not a life-safety device.\n\nDo not rely on this application for emergency response, navigation in high-risk environments, or as a replacement for required safety equipment. The app does not contact emergency services.\n\nBy proceeding you acknowledge that you remain fully responsible for your personal safety and surroundings at all times.</string>
+    <string name="safety_ack_checkbox">I acknowledge that Android Clear is an auxiliary tool and not a safety device.</string>
+    <string name="safety_accept">Accept &amp; Continue</string>
+    <string name="action_cancel">Cancel</string>
+
+    <string name="camera_rationale_title">Camera Access Required</string>
+    <string name="camera_rationale_body">Android Clear needs access to your camera to capture live video feeds for real-time hazard detection and obstacle analysis.\n\nPrivacy notice: video frames are processed locally on your device. Video data is never stored, recorded, or transmitted to external servers without your explicit consent.</string>
+    <string name="camera_rationale_grant">Grant Camera Permission</string>
+    <string name="action_not_now">Not Now</string>
+    <string name="camera_settings_title">Camera access is blocked</string>
+    <string name="camera_settings_body">Camera permission was denied. Open the system settings for Android Clear to allow camera access; hazard detection cannot run without it.</string>
+    <string name="action_open_settings">Open settings</string>
+    <string name="action_dismiss">Dismiss</string>
+
+    <string name="power_notice_title">Performance &amp; Background Limits</string>
+    <string name="power_notice_body">Battery Saver is on. Android may pause or restrict background processing, so continuous hazard detection can stop until the wallpaper is shown again. Real-time analysis also uses more battery and can warm the device.</string>
 </resources>

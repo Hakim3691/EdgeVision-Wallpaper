@@ -85,6 +85,23 @@ Thresholds live in `vision/HazardPolicy.kt`. Alert channels are selected by
 vibration switches; Blind Assist always suppresses the visual flash and keeps a
 tone, vibration, and spoken "Vehicle approaching" / "Obstacle ahead" alert.
 
+## Legal, privacy and store submission
+
+The app ships its own legal text and reads it offline:
+
+| Document | In-app location |
+| --- | --- |
+| AI Detection Disclosure | Settings → About & Legal |
+| Safety & Emergency Notice | Settings → About & Legal, and a blocking acknowledgement before capture is first enabled |
+| Performance & Background Limits | Settings → About & Legal, plus a Battery Saver banner |
+| Privacy Policy | Settings → About & Legal |
+| Terms & Conditions | Settings → About & Legal |
+
+The canonical text is `app/src/main/assets/legal/*.txt`; see
+[docs/legal](docs/legal/README.md) for the publication checklist, the corrected
+Play Console Data Safety answers and the disclaimer-to-code map. Replace the
+`support@example.com` and postal-address placeholders before publishing.
+
 ## Mission status
 
 The project currently builds green and its decision layers are covered by

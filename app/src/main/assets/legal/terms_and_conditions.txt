@@ -1,0 +1,118 @@
+ANDROID CLEAR — TERMS & CONDITIONS
+
+Last updated: 7 November 2026
+Applies to: Android Clear (com.edgevision.wallpaper), version 1.4.0 and later.
+
+1. ACCEPTANCE OF TERMS
+
+By downloading, installing, accessing or using the Android Clear application
+("Application", "Service"), you agree to be bound by these Terms & Conditions
+("Terms"). If you do not agree, do not install or use the Application.
+
+These Terms are a legally binding agreement between you ("User", "you") and the
+developers and publishers of Android Clear ("Company", "we", "us", "our"). We may
+update these Terms; the current text ships inside the app and the date above
+changes when it does. Continued use after a change means you accept the revised
+Terms.
+
+2. LICENCE AND PERMITTED USE
+
+2.1 Grant of licence. Subject to your compliance with these Terms, we grant you a
+limited, non-exclusive, non-transferable, non-sublicensable, revocable licence to
+download, install and use one copy of the Application for your personal,
+non-commercial use on a compatible Android device you own or control.
+
+2.2 Restrictions. You agree not to:
+- copy, decompile, reverse engineer, disassemble, attempt to derive the source
+  code of, or modify the Application or any part of it;
+- rent, lease, lend, sell, redistribute or sublicense the Application;
+- remove, alter or obscure any proprietary notices;
+- use the Application in any way that could damage, disable, overburden or impair
+  any Android system, device or network.
+
+3. ASSISTIVE TOOL — NO SAFETY GUARANTEE
+
+3.1 Android Clear is an informational and assistive tool. It is not a
+life-safety device, a medical device, a navigation aid, or a substitute for
+required safety equipment, a white cane, a guide dog, or your own attention.
+
+3.2 Automated detection is probabilistic. It can miss hazards (false negatives)
+and can report hazards that are not there (false positives). Weather, poor
+lighting, lens obstructions, motion, mounting angle, device performance and model
+limits all reduce accuracy.
+
+3.3 Do not rely on Android Clear for emergency response, for crossing roads, for
+driving, or in any environment where a missed detection could cause injury. The
+Application does not contact emergency services.
+
+3.4 You remain fully responsible for your personal safety and surroundings at all
+times.
+
+4. CAMERA, BATTERY AND DEVICE RESOURCES
+
+4.1 The Application keeps the rear camera and an on-device detection model active
+while the wallpaper is visible and the device is unlocked. Continuous operation
+increases battery consumption and can warm the device.
+
+4.2 Android may pause or restrict background processing in battery-saver mode or
+under memory pressure, and some device manufacturers restrict camera access from
+wallpaper or background processes. In those cases detection may stop until the
+wallpaper is shown again.
+
+4.3 Threat capture, when you enable it, writes JPEG files to your picture
+storage. You are responsible for managing that storage and for deleting captures
+you no longer want.
+
+5. LAWFUL USE
+
+You agree to use the Application only for lawful purposes and in accordance with
+all applicable laws. You must not use it to record or monitor people in ways that
+breach privacy, consent, harassment, surveillance or workplace laws in your
+jurisdiction, and you must not use it on property you are not authorised to
+monitor. You are solely responsible for how you use the camera and any captures
+you create.
+
+6. INTELLECTUAL PROPERTY
+
+The Application, its code, its user interface and its bundled model integration
+are owned by the Company or its licensors and are protected by applicable
+intellectual property laws. These Terms grant you no ownership rights. The
+bundled EfficientDet-Lite0 model is distributed by TensorFlow under its own
+licence terms.
+
+7. DISCLAIMER OF WARRANTIES
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE APPLICATION IS PROVIDED ON
+AN "AS IS" AND "AS AVAILABLE" BASIS, WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+PURPOSE, ACCURACY AND NON-INFRINGEMENT. We do not warrant that detection will be
+uninterrupted, timely, complete or error-free.
+
+8. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL THE COMPANY,
+ITS AFFILIATES, DIRECTORS, EMPLOYEES, AGENTS OR LICENSORS BE LIABLE FOR ANY
+INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL OR PUNITIVE DAMAGES, INCLUDING LOSS
+OF PROFITS, DATA, USE OR GOODWILL, PERSONAL INJURY OR PROPERTY DAMAGE ARISING FROM
+YOUR USE OF OR RELIANCE ON THE APPLICATION, OR FROM ANY DETECTION THE APPLICATION
+DID OR DID NOT MAKE.
+
+9. TERMINATION
+
+These Terms apply until terminated. You may terminate them by uninstalling the
+Application. We may suspend or terminate the licence if you breach these Terms or
+use the Application unlawfully.
+
+10. GOVERNING LAW AND DISPUTE RESOLUTION
+
+These Terms are governed by the laws of the jurisdiction in which the Company
+operates, without regard to conflict-of-law principles. Any legal action arising
+out of or relating to these Terms or the Application must be brought exclusively
+in the courts located in that jurisdiction, and you irrevocably submit to their
+exclusive jurisdiction.
+
+11. CONTACT
+
+Developer: Android Clear Team
+Email: support@example.com
+Address: [postal address to be completed before publication]

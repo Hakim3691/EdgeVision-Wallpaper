@@ -39,6 +39,12 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".legal.LegalActivity"
+            android:exported="false"
+            android:label="@string/legal_heading"
+            android:parentActivityName=".MainActivity" />
+
         <service
             android:name=".wallpaper.CameraWallpaperService"
             android:exported="true"
