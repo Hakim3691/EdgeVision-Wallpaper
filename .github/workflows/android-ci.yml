@@ -172,6 +172,21 @@ jobs:
           bash ./gradlew :app:assembleDebug :app:assembleRelease
           --configuration-cache --build-cache --stacktrace
 
+      - name: Verify the tag matches the built version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          VERSION="$(sed -n 's/^versionName=//p' version.properties | tr -d '\r')"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match versionName $VERSION in version.properties"
+            exit 1
+          fi
+          AAPT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools/35.0.0/aapt"
+          "$AAPT" dump badging app/build/outputs/apk/release/app-arm64-v8a-release.apk \
+            | grep -q "versionName='$VERSION'" \
+            || { echo "::error::Release APK is not version $VERSION"; exit 1; }
+
       - name: Enforce 40 MB APK cap and arm64-only release
         run: |
           bash scripts/check_apk_size.sh \

@@ -6,6 +6,32 @@ specifications" from "works on hardware". No feature is claimed on the strength 
 a class existing, and no latency figure is claimed at all: nothing in this
 environment can measure camera latency.
 
+## 1.3.3 — live view, biometric handover and detection continuity
+
+This revision supersedes the measurements below.
+
+- **Compile blocker removed.** The screen receiver registration in
+  `CameraWallpaperService` was missing a closing parenthesis, so the tree did not
+  build. CI now refuses to publish a `v*` tag unless `version.properties` matches
+  the tag and the built APK's `versionName`.
+- **Live view restored.** Preview (33 ms) and detection (66-1000 ms) cadences are
+  no longer coupled. Preview frames use pooled bitmaps, detector input is built
+  only when the worker is idle, and every delivered image is closed even when it
+  is not converted.
+- **Biometric handover.** `ScreenStateMonitor` feeds the lifecycle gate, which
+  releases the camera on screen-off and refuses to run while the keyguard is up.
+  `ACTION_SCREEN_ON` alone can no longer reopen the camera behind face unlock.
+- **Detection continuity.** Hiding the wallpaper no longer clears the persisted
+  capture preference, the interpreter stays warm across visibility changes, and
+  the tracker matches by IoU or centre distance over a 2.5 s window so slow
+  cadences can still confirm an approach.
+- **Failures are visible.** Camera retries use bounded backoff, and the settings
+  screen shows live camera/detector state plus the last error.
+
+Verified after these changes: `:app:assembleDebug`, `:app:assembleRelease` and
+`:app:testDebugUnitTest` pass with 78 tests and 0 failures. Release APK 35,082,188
+bytes (33.46 MiB), arm64-v8a only, `versionCode 4` / `versionName 1.3.3`.
+
 ## Verified in this environment
 
 Toolchain: Temurin JDK 21.0.13, Android SDK Platform 35, Build-Tools 35.0.0,

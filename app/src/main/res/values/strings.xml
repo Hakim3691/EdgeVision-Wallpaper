@@ -52,6 +52,8 @@
     <string name="performance_mode_balanced">Balanced</string>
     <string name="performance_mode_performance">Fast</string>
 
+    <string name="diagnostics_heading">Live pipeline status</string>
+
     <string name="privacy_note">Detection runs locally with a bundled EfficientDet-Lite0 model. No images or detections are uploaded.</string>
     <string name="safety_note">Safety notice: this is an assistive prototype, not a certified mobility or driving aid. Never rely on it to avoid traffic or other hazards.</string>
     <string name="blind_mode_fixed_alerts">Blind Assist always uses sound and vibration.</string>

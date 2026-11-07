@@ -3,11 +3,17 @@ package com.edgevision.wallpaper.vision
 import com.edgevision.wallpaper.inference.Box
 import com.edgevision.wallpaper.inference.Detection
 import com.edgevision.wallpaper.inference.HazardKind
+import kotlin.math.hypot
 
 /**
  * Tracks hazard boxes across frames. A hazard is raised when a detected vehicle
  * or pole-like object covers enough of the frame, or when a smaller box is
  * expanding quickly (which is the signature of an object approaching the user).
+ *
+ * Matching uses IoU **or** centre distance. At the 4–10 fps the wallpaper runs at,
+ * a hand-held phone moves a box far enough that IoU alone falls below the
+ * threshold between frames, which used to reset the track on every frame and stop
+ * the two-frame confirmation from ever completing.
  */
 class HazardTracker(private val policy: HazardPolicy = HazardPolicy()) {
 
@@ -31,10 +37,11 @@ class HazardTracker(private val policy: HazardPolicy = HazardPolicy()) {
             val matched = tracks
                 .asSequence()
                 .filter { it.kind == kind && nowMs - it.updatedAtMs <= policy.maxTrackAgeMs }
-                .map { track -> track to track.box.iou(detection.box) }
-                .filter { (_, iou) -> iou >= policy.minIouToMatch }
-                .maxByOrNull { (_, iou) -> iou }
-                ?.first
+                .filter { track ->
+                    track.box.iou(detection.box) >= policy.minIouToMatch ||
+                        centerDistance(track.box, detection.box) <= policy.maxCenterDistance
+                }
+                .maxByOrNull { track -> track.box.iou(detection.box) }
 
             val area = detection.box.area.coerceIn(0.0, 1.0)
             val growth = if (matched != null) {
@@ -85,5 +92,11 @@ class HazardTracker(private val policy: HazardPolicy = HazardPolicy()) {
 
     fun reset() {
         tracks.clear()
+    }
+
+    private fun centerDistance(a: Box, b: Box): Double {
+        val dx = ((a.left + a.right) / 2.0) - ((b.left + b.right) / 2.0)
+        val dy = ((a.top + a.bottom) / 2.0) - ((b.top + b.bottom) / 2.0)
+        return hypot(dx, dy)
     }
 }

@@ -14,8 +14,12 @@ import kotlin.math.sin
 
 /**
  * Draws into the wallpaper surface with a translucent backing. All calls must be
- * made on the wallpaper's main thread; camera bitmaps are handed over through the
- * engine after posting to that thread.
+ * made on the wallpaper's main thread.
+ *
+ * The renderer never owns the preview bitmap: buffers come from the camera pool
+ * and are returned by the engine after drawing. It keeps the last frame so a
+ * surface redraw (launcher resume, keyguard dismissal) repaints immediately
+ * instead of showing an empty screen until the camera reopens.
  */
 class HazardOverlayRenderer(
     private val settings: AssistSettings,
@@ -47,31 +51,26 @@ class HazardOverlayRenderer(
 
     fun detach() {
         holder = null
-        preview?.recycle()
-        preview = null
     }
 
     fun release() {
         hazardUntilMs = 0L
         visualAlertEnabled = false
+        preview = null
         detach()
     }
 
     fun clear() {
         hazardUntilMs = 0L
         visualAlertEnabled = false
+        preview = null
         draw()
     }
 
     fun onFrame(bitmap: Bitmap, rotation: Int) {
-        if (holder == null) {
-            bitmap.recycle()
-            return
-        }
-        val previous = preview
+        if (holder == null) return
         preview = bitmap
         rotationDegrees = rotation
-        previous?.recycle()
         draw()
     }
 

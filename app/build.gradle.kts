@@ -1,4 +1,5 @@
 import com.android.build.gradle.internal.api.BaseVariantOutputImpl
+import java.util.Properties
 
 plugins {
     id("com.android.application")
@@ -28,6 +29,15 @@ val verifyDetectionModel = tasks.register("verifyDetectionModel") {
 }
 tasks.named("preBuild").configure { dependsOn(verifyDetectionModel) }
 
+// Single source of truth shared with CI: a v* tag must match versionName before
+// the release job may publish anything.
+val versionProperties = Properties().apply {
+    val file = rootProject.file("version.properties")
+    if (file.isFile) file.inputStream().use { load(it) }
+}
+val appVersionCode = versionProperties.getProperty("versionCode", "1").toInt()
+val appVersionName = versionProperties.getProperty("versionName", "1.0")
+
 android {
     namespace = "com.edgevision.wallpaper"
     compileSdk = 35
@@ -36,8 +46,8 @@ android {
         applicationId = "com.edgevision.wallpaper"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.3.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

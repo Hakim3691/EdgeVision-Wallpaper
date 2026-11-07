@@ -15,6 +15,7 @@ import androidx.core.view.isVisible
 import com.edgevision.wallpaper.accessibility.AssistModeResolver
 import com.edgevision.wallpaper.databinding.ActivityMainBinding
 import com.edgevision.wallpaper.diagnostics.PerformanceMode
+import com.edgevision.wallpaper.diagnostics.PipelineDiagnostics
 import com.edgevision.wallpaper.settings.AssistSettings
 import com.edgevision.wallpaper.wallpaper.CameraWallpaperService
 
@@ -72,7 +73,7 @@ class MainActivity : AppCompatActivity() {
         // Capture settings are read by the wallpaper engine; this screen only
         // persists them and shows the current values.
         binding.switchCaptureArmed.setOnCheckedChangeListener { _, checked ->
-            settings.captureArmed = checked
+            settings.captureEnabled = checked
         }
         binding.sliderBurstShots.addOnChangeListener { _, value, _ ->
             settings.burstShots = value.toInt()
@@ -122,12 +123,13 @@ class MainActivity : AppCompatActivity() {
             touchExplorationEnabled = touchExplorationEnabled,
         )
         binding.tvAccessibilityNote.isVisible = autoBlindMode
+        binding.tvPipelineStatus.text = PipelineDiagnostics.summary()
 
         refreshCaptureUi()
     }
 
     private fun refreshCaptureUi() {
-        binding.switchCaptureArmed.isChecked = settings.captureArmed
+        binding.switchCaptureArmed.isChecked = settings.captureEnabled
         binding.sliderBurstShots.value = settings.burstShots
             .coerceIn(MIN_VISIBLE_BURST_SHOTS, MAX_BURST_SHOTS)
             .toFloat()

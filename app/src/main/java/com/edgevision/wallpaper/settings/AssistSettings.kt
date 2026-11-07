@@ -1,6 +1,7 @@
 package com.edgevision.wallpaper.settings
 
 import android.content.Context
+import android.content.SharedPreferences
 import com.edgevision.wallpaper.diagnostics.PerformanceMode
 import kotlin.math.roundToInt
 
@@ -41,12 +42,38 @@ class AssistSettings(context: Context) {
     val overlayAlpha: Int
         get() = (overlayOpacityPercent / 100f * 255f).roundToInt().coerceIn(0, 255)
 
-    /** Automatic burst capture armed by the user. */
-    var captureArmed: Boolean
-        get() = prefs.getBoolean(KEY_CAPTURE_ARMED, false)
+    /**
+     * Master switch for automatic burst capture.
+     *
+     * This is the user's choice and only the settings screen may change it. The
+     * wallpaper engine keeps its runtime arming state separately, so hiding the
+     * wallpaper, opening the app drawer or letting a triple-tap window expire can
+     * no longer rewrite the stored preference.
+     */
+    var captureEnabled: Boolean
+        get() = prefs.getBoolean(
+            KEY_CAPTURE_ENABLED,
+            // Migrate the pre-1.3.3 value, which conflated preference and runtime state.
+            prefs.getBoolean(KEY_CAPTURE_ARMED, false),
+        )
         set(value) {
-            prefs.edit().putBoolean(KEY_CAPTURE_ARMED, value).apply()
+            prefs.edit().putBoolean(KEY_CAPTURE_ENABLED, value).apply()
         }
+
+    @Deprecated("Use captureEnabled; runtime arming lives in the wallpaper engine")
+    var captureArmed: Boolean
+        get() = captureEnabled
+        set(value) {
+            captureEnabled = value
+        }
+
+    fun registerListener(listener: SharedPreferences.OnSharedPreferenceChangeListener) {
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+    }
+
+    fun unregisterListener(listener: SharedPreferences.OnSharedPreferenceChangeListener) {
+        prefs.unregisterOnSharedPreferenceChangeListener(listener)
+    }
 
     /** Images per burst, clamped to the range the capture controller accepts. */
     var burstShots: Int
@@ -93,6 +120,7 @@ class AssistSettings(context: Context) {
         const val KEY_HAPTICS = "haptics_enabled"
         const val KEY_OVERLAY_OPACITY = "overlay_opacity"
         const val KEY_CAPTURE_ARMED = "capture_armed"
+        const val KEY_CAPTURE_ENABLED = "capture_enabled"
         const val KEY_BURST_SHOTS = "burst_shots"
         const val KEY_BURST_INTERVAL_MS = "burst_interval_ms"
         const val KEY_CAPTURE_COOLDOWN_MS = "capture_cooldown_ms"
