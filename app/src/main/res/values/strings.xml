@@ -91,4 +91,9 @@
 
     <string name="power_notice_title">Performance &amp; Background Limits</string>
     <string name="power_notice_body">Battery Saver is on. Android may pause or restrict background processing, so continuous hazard detection can stop until the wallpaper is shown again. Real-time analysis also uses more battery and can warm the device.</string>
+
+    <!-- New strings for v1.5.0 -->
+    <string name="usage_stats_permission_granted">Usage stats permission granted</string>
+    <string name="usage_stats_permission_required">Usage stats permission required</string>
+    <string name="camera_overlay_label">Camera Overlay</string>
 </resources>

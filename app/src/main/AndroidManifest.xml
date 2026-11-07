@@ -3,6 +3,10 @@
 
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA"/>
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"/>
     <!-- Burst captures use MediaStore. Scoped storage on API 29+ needs no storage
          permission; legacy devices still require the write grant. -->
     <uses-permission
@@ -49,13 +53,25 @@
             android:name=".wallpaper.CameraWallpaperService"
             android:exported="true"
             android:label="@string/wallpaper_label"
-            android:permission="android.permission.BIND_WALLPAPER">
+            android:permission="android.permission.BIND_WALLPAPER"
+            android:foregroundServiceType="camera">
             <intent-filter>
                 <action android:name="android.service.wallpaper.WallpaperService" />
             </intent-filter>
             <meta-data
                 android:name="android.service.wallpaper"
                 android:resource="@xml/wallpaper" />
+        </service>
+
+        <!-- New foreground service for see-through camera overlay over other apps -->
+        <service
+            android:name=".CameraPreviewForegroundService"
+            android:exported="false"
+            android:label="@string/camera_overlay_label"
+            android:foregroundServiceType="camera">
+            <intent-filter>
+                <action android:name="com.edgevision.wallpaper.action.START_OVERLAY" />
+            </intent-filter>
         </service>
     </application>
 

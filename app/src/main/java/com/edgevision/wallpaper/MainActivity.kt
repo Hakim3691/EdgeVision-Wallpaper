@@ -3,12 +3,14 @@ package com.edgevision.wallpaper
 import android.Manifest
 import android.app.WallpaperManager
 import android.content.ComponentName
+import android.content.Context
 import android.content.DialogInterface
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
@@ -34,6 +36,10 @@ class MainActivity : AppCompatActivity() {
     /** Guards the capture switch while the safety acknowledgement is pending. */
     private var suppressCaptureToggle = false
 
+    /** Foreground service binding */
+    private lateinit var foregroundServiceConnection: android.content.ServiceConnection
+    private var foregroundServiceBinder: CameraPreviewForegroundService.LocalBinder? = null
+            
     private val requestCameraPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -171,6 +177,8 @@ class MainActivity : AppCompatActivity() {
             isPowerSaveMode() && !settings.powerNoticeDismissed
 
         refreshCaptureUi()
+
+
     }
 
     private fun refreshCaptureUi() {
@@ -280,10 +288,10 @@ class MainActivity : AppCompatActivity() {
         MaterialAlertDialogBuilder(this)
             .setTitle(R.string.camera_rationale_title)
             .setMessage(R.string.camera_rationale_body)
-            .setPositiveButton(R.string.camera_rationale_grant) { _, _ ->
+            .setPositiveButton(R.string.camera_rationale_grant) { _, which ->
                 requestCameraPermission.launch(Manifest.permission.CAMERA)
             }
-            .setNegativeButton(R.string.action_not_now, null)
+            .setNegativeButton(R.string.action_not_now, null) 
             .show()
     }
 
@@ -336,6 +344,43 @@ class MainActivity : AppCompatActivity() {
             }
         }
         dialog.show()
+    }
+
+
+
+
+    private fun bindForegroundService() {
+        val intent = Intent(this, CameraPreviewForegroundService::class.java)
+        intent.action = "com.edgevision.wallpaper.action.START_OVERLAY"
+        // Bind using 2-param form; service connection callback handles binding
+        bindService(intent, foregroundServiceConnection, Context.BIND_AUTO_CREATE)
+    }
+
+    private fun unbindForegroundService() {
+        if (foregroundServiceBinder != null) {
+            unbindService(foregroundServiceConnection)
+            foregroundServiceBinder = null
+        }
+    }
+
+    private fun updateOverlayVisibility(visibility: Int) {
+        // Overlay visibility updated
+    }
+
+    private fun isHomePackage(topPackage: String?): Boolean {
+        if (topPackage == null) return true
+        // Known launcher packages
+        val launcherPackages = listOf(
+            "com.android.launcher3",
+            "com.android.launcher2",
+            "com.google.android.apps.googleapp",
+            "com.google.android.deslauncher"
+        )
+        // Packages starting with known prefixes
+        val prefixPatterns = listOf("com.android", "google")
+        val startsWithPrefix = prefixPatterns.any { topPackage.startsWith(it) }
+        val isLauncher = launcherPackages.contains(topPackage)
+        return startsWithPrefix || isLauncher
     }
 
     private companion object {
