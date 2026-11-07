@@ -73,6 +73,7 @@ class CameraWallpaperService : WallpaperService() {
         private var engineVisible = false
 
         private var pulseScheduled = false
+        private var frameSeq = 0
         private val pulseRunnable = object : Runnable {
             override fun run() {
                 if (!pulseScheduled) return
@@ -96,6 +97,25 @@ class CameraWallpaperService : WallpaperService() {
         private val deviceStateReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 refreshDeviceState()
+            }
+        }
+
+        private val screenStateReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                val action = intent?.action
+                when (action) {
+                    Intent.ACTION_SCREEN_OFF -> {
+                        // Lock screen activated: handover camera control so face
+                        // recognition can work unimpeded.
+                        Log.i(TAG, "Screen off: pausing camera for biometric unlock")
+                        lifecycle?.onVisibilityChanged(false)
+                    }
+                    Intent.ACTION_SCREEN_ON -> {
+                        // User unlocked: resume live camera view.
+                        Log.i(TAG, "Screen on: resuming live camera view")
+                        lifecycle?.onVisibilityChanged(true)
+                    }
+                }
             }
         }
 
@@ -161,6 +181,7 @@ class CameraWallpaperService : WallpaperService() {
                 thermalCleanup = registerThermalListener()
             }
             registerDeviceStateReceiver()
+            registerScreenStateReceiver()
             refreshDeviceState()
         }
 
@@ -205,6 +226,7 @@ class CameraWallpaperService : WallpaperService() {
         }
 
         override fun onSurfaceRedrawNeeded(holder: SurfaceHolder) {
+            if (!engineVisible) return
             renderer.draw()
         }
 
@@ -216,6 +238,7 @@ class CameraWallpaperService : WallpaperService() {
             disarmCapture()
             thermalCleanup?.invoke()
             thermalCleanup = null
+            unregisterScreenStateReceiver()
             runCatching { unregisterReceiver(deviceStateReceiver) }
             alerts.close()
             renderer.release()
@@ -246,6 +269,9 @@ class CameraWallpaperService : WallpaperService() {
         }
 
         override fun onFrame(frame: ConvertedFrame) {
+            // Throttle rendering to every 2 frames to reduce main thread load
+            // and prevent the live view from lagging behind real camera preview.
+            if (frameSeq++ % 2 != 0) return
             mainHandler.post {
                 renderer.onFrame(frame.preview, frame.rotationDegrees)
             }
@@ -395,6 +421,26 @@ class CameraWallpaperService : WallpaperService() {
                 },
                 ContextCompat.RECEIVER_NOT_EXPORTED,
             )
+        }
+
+        private fun registerScreenStateReceiver() {
+            ContextCompat.registerReceiver(
+                this@CameraWallpaperService,
+                screenStateReceiver,
+                IntentFilter().apply {
+                    addAction(Intent.ACTION_SCREEN_ON)
+                    addAction(Intent.ACTION_SCREEN_OFF
+                },
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+        }
+
+        private fun unregisterScreenStateReceiver() {
+            try {
+                unregisterReceiver(screenStateReceiver)
+            } catch (e: IllegalArgumentException) {
+                // Receiver may already be unregistered
+            }
         }
 
         private fun schedulePulse() {
