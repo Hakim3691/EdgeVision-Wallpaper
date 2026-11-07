@@ -36,9 +36,10 @@ the code:
 
 ## Before publishing
 
-1. Replace `support@example.com` and the postal-address placeholder in
-   `privacy_policy.txt` and `terms_and_conditions.txt` with the real support
-   contact. Both files are plain UTF-8 and can be edited directly.
+1. The support contact is `hakimafalul@gmail.com` and the postal address is
+   "37/2, Pereira Lane, Colombo 6, Sri Lanka", in both `privacy_policy.txt` and
+   `terms_and_conditions.txt`. Keep them in step with the Play Console listing if
+   they change.
 2. Host the privacy policy at a public URL (Play Console requires one). The asset
    text is the canonical copy; publish it unchanged.
 3. Answer the Data Safety form as described in

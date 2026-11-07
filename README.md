@@ -99,8 +99,9 @@ The app ships its own legal text and reads it offline:
 
 The canonical text is `app/src/main/assets/legal/*.txt`; see
 [docs/legal](docs/legal/README.md) for the publication checklist, the corrected
-Play Console Data Safety answers and the disclaimer-to-code map. Replace the
-`support@example.com` and postal-address placeholders before publishing.
+Play Console Data Safety answers and the disclaimer-to-code map. The support
+contact (`hakimafalul@gmail.com`) and postal address are set in the bundled
+privacy policy and terms.
 
 ## Mission status
 
