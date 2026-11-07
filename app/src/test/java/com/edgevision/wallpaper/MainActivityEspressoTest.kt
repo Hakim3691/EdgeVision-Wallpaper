@@ -30,6 +30,12 @@ class MainActivityEspressoTest {
             .edit()
             .clear()
             .commit()
+        // These tests exercise settings, not the first-run legal flow, so the
+        // disclosure and safety acknowledgement are pre-accepted.
+        AssistSettings(context).apply {
+            aiDisclosureSeen = true
+            safetyNoticeAccepted = true
+        }
     }
 
     @Test

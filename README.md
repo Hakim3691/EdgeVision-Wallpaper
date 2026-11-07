@@ -50,17 +50,22 @@ Key files:
 
 ### Lifecycle and battery behavior
 
-`WallpaperService.Engine.onVisibilityChanged` feeds
-`WallpaperEngineController`. The controller runs hardware only when **both** the
-wallpaper is visible and the surface exists. On `onVisibilityChanged(false)` it
-stops inference first, then closes the `CameraCaptureSession`, `CameraDevice`,
-and `ImageReader` synchronously. Pending Python work is invalidated, the detector
-interpreter is released, the pulse loop is cancelled, and audio/TTS resources are
-released. Returning to the launcher starts the camera and Python session again.
+`WallpaperService.Engine.onVisibilityChanged` and `ScreenStateMonitor` both feed
+`WallpaperEngineController`, which is the single owner of the running state. It
+runs hardware only when the wallpaper is visible, the surface exists, the screen
+is interactive **and** the keyguard is unlocked. That last condition matters:
+`ACTION_SCREEN_ON` fires for the lock screen before biometric unlock, so resuming
+there would take the camera away from face unlock. On any failing condition it
+stops inference first, then closes the session/device/reader synchronously.
 
-The camera stream is capped at 1280x720. Frame conversion is throttled to ~15 fps
-and inference drops frames while the single worker is busy, so thermal load stays
-bounded. Detector input is a center-cropped 320x320 RGB buffer.
+Hiding the wallpaper keeps the last preview frame so the launcher repaints
+instantly, and it keeps the Python/TFLite detector warm: only in-flight results
+are invalidated, so returning does not pay a multi-second interpreter restart.
+
+Preview and detection run on independent cadences. The live view updates at
+~30 fps (33 ms); the detector runs at the governor's interval (66-1000 ms). The
+preview uses three pooled bitmaps and the 320x320 RGB buffer is only built when
+the inference worker is idle, so steady-state rendering allocates nothing.
 
 ### Hazard behavior
 
@@ -80,6 +85,24 @@ Thresholds live in `vision/HazardPolicy.kt`. Alert channels are selected by
 vibration switches; Blind Assist always suppresses the visual flash and keeps a
 tone, vibration, and spoken "Vehicle approaching" / "Obstacle ahead" alert.
 
+## Legal, privacy and store submission
+
+The app ships its own legal text and reads it offline:
+
+| Document | In-app location |
+| --- | --- |
+| AI Detection Disclosure | Settings → About & Legal |
+| Safety & Emergency Notice | Settings → About & Legal, and a blocking acknowledgement before capture is first enabled |
+| Performance & Background Limits | Settings → About & Legal, plus a Battery Saver banner |
+| Privacy Policy | Settings → About & Legal |
+| Terms & Conditions | Settings → About & Legal |
+
+The canonical text is `app/src/main/assets/legal/*.txt`; see
+[docs/legal](docs/legal/README.md) for the publication checklist, the corrected
+Play Console Data Safety answers and the disclaimer-to-code map. The support
+contact (`hakimafalul@gmail.com`) and postal address are set in the bundled
+privacy policy and terms.
+
 ## Mission status
 
 The project currently builds green and its decision layers are covered by
@@ -89,7 +112,7 @@ and in the dedicated `bdd-specs` CI job. See
 state, measured APK composition and the explicit list of work that still needs a
 physical device (camera burst writer, GPU display path, dashboard/onboarding).
 
-Measured debug APK: 35.48 MiB (arm64-v8a only). The dominant non-functional
+Measured debug APK: 34.54 MiB (arm64-v8a only). The dominant non-functional
 weight is the Chaquopy Python runtime (~19 MB); there is no artificial padding.
 
 ## Requirements
@@ -245,13 +268,12 @@ bash scripts/check_apk_size.sh app/build/outputs/apk/release/app-arm64-v8a-relea
 
 ## Known limitations
 
-- **Background camera access:** Android 9+ restricts camera use from background
-  components. A `WallpaperService` usually remains bound while the launcher is
-  visible, but some OEM builds may still deny camera access. The wallpaper fails
-  closed (transparent home screen, no crash), and the camera error is logged. A
-  foreground-service/notification workaround is not implemented because it adds a
-  persistent notification and restricted background-start behavior; validate on
-  your target devices.
+- **Background camera access:** Android 11+ applies while-in-use restrictions to
+  `CAMERA`, and some OEM builds deny it to a wallpaper process. The pipeline now
+  retries with bounded backoff instead of dying, and the settings screen shows the
+  live camera state and the last error. A camera-type foreground service (which
+  would add a persistent notification) is still not implemented; if the status
+  reads `camera=error` on a device, that is the remaining workaround to add.
 - The COCO model has no bespoke `pole` class. Pole-like hazards come from the
   mapped street-fixture classes above; custom classes require retraining.
 - Detection is throttled and frame-dropping by design. Alerts are advisory and may

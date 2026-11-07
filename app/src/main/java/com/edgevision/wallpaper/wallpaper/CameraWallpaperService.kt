@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.PixelFormat
 import android.os.BatteryManager
@@ -35,6 +36,7 @@ import com.edgevision.wallpaper.capture.JpegSource
 import com.edgevision.wallpaper.capture.MediaStoreImageSink
 import com.edgevision.wallpaper.capture.TripleTapArming
 import com.edgevision.wallpaper.diagnostics.PerformanceController
+import com.edgevision.wallpaper.diagnostics.PipelineDiagnostics
 import com.edgevision.wallpaper.diagnostics.ThermalPressure
 import com.edgevision.wallpaper.inference.HazardInferenceEngine
 import com.edgevision.wallpaper.inference.InferenceResult
@@ -59,6 +61,7 @@ class CameraWallpaperService : WallpaperService() {
         private lateinit var performance: PerformanceController
         private lateinit var captureController: CaptureController
         private lateinit var burstRunner: BurstCaptureRunner
+        private lateinit var screenMonitor: ScreenStateMonitor
 
         private val tripleTap = TripleTapArming()
         private val tracker = HazardTracker()
@@ -66,6 +69,7 @@ class CameraWallpaperService : WallpaperService() {
 
         private var inferenceEngine: HazardInferenceEngine? = null
         private var lifecycle: WallpaperEngineController? = null
+        private var preferenceListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
         private var surfaceHolder: SurfaceHolder? = null
         private var thermalCleanup: (() -> Unit)? = null
 
@@ -87,9 +91,10 @@ class CameraWallpaperService : WallpaperService() {
 
         private val disarmRunnable = Runnable {
             if (tripleTap.onTimePassed(SystemClock.elapsedRealtime())) {
-                captureController.setArmed(false)
-                settings.captureArmed = false
-                Log.i(TAG, "Capture disarmed after its window elapsed")
+                // The gesture window ended: disarm the runtime only. The user's
+                // persisted capture preference is never rewritten here.
+                captureController.setArmed(settings.captureEnabled)
+                Log.i(TAG, "Capture window elapsed")
             }
         }
 
@@ -113,9 +118,12 @@ class CameraWallpaperService : WallpaperService() {
             )
             alerts = AlertCoordinator(this@CameraWallpaperService)
 
-            camera = CameraController(this@CameraWallpaperService, this)
             val inference = HazardInferenceEngine(this@CameraWallpaperService, this)
             inferenceEngine = inference
+
+            // The camera asks the detector whether it can take a frame, so the
+            // 320x320 conversion only runs when the worker is actually free.
+            camera = CameraController(this@CameraWallpaperService, this) { inference.isIdle() }
 
             captureController = CaptureController(
                 config = BurstConfig(
@@ -124,7 +132,7 @@ class CameraWallpaperService : WallpaperService() {
                     cooldownMs = settings.captureCooldownMs,
                 ),
             )
-            captureController.setArmed(settings.captureArmed)
+            captureController.setArmed(settings.captureEnabled)
 
             burstRunner = BurstCaptureRunner(
                 controller = captureController,
@@ -140,10 +148,13 @@ class CameraWallpaperService : WallpaperService() {
             )
 
             performance = PerformanceController { profile ->
+                // Preview and detection are separate: slowing detection for
+                // battery or heat must never freeze the live view.
+                camera.setPreviewIntervalMs(profile.previewFrameIntervalMs)
                 camera.setDetectionIntervalMs(profile.inferenceIntervalMs)
+                PipelineDiagnostics.cadenceChanged(profile.inferenceIntervalMs)
                 Log.i(TAG, "Cadence ${profile.label}")
             }
-            performance.mode = settings.performanceMode
 
             lifecycle = WallpaperEngineController(
                 camera = object : EngineResource {
@@ -157,10 +168,16 @@ class CameraWallpaperService : WallpaperService() {
                 onError = { message -> Log.w(TAG, message) },
             )
 
+            screenMonitor = ScreenStateMonitor(this@CameraWallpaperService) { interactive, locked ->
+                lifecycle?.onScreenStateChanged(interactive, locked)
+            }
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 thermalCleanup = registerThermalListener()
             }
             registerDeviceStateReceiver()
+            screenMonitor.start()
+            registerPreferenceListener()
             refreshDeviceState()
         }
 
@@ -172,17 +189,20 @@ class CameraWallpaperService : WallpaperService() {
             if (visible) {
                 alerts.prepare()
                 syncCaptureSettings()
+                // A screen-on event may have happened while the wallpaper was
+                // hidden; re-read keyguard/screen state before starting hardware.
+                screenMonitor.refresh()
                 refreshDeviceState()
+                // Repaint the last frame immediately instead of waiting for the
+                // camera to reopen.
+                renderer.draw()
             } else {
-                // Release all rendering, audio, detection and capture state while hidden.
                 mainHandler.removeCallbacks(pulseRunnable)
-                mainHandler.removeCallbacks(disarmRunnable)
                 pulseScheduled = false
-                renderer.clear()
                 alerts.stop()
                 tracker.reset()
                 threatEngine.reset()
-                disarmCapture()
+                cancelTransientArming()
             }
         }
 
@@ -205,15 +225,20 @@ class CameraWallpaperService : WallpaperService() {
         }
 
         override fun onSurfaceRedrawNeeded(holder: SurfaceHolder) {
+            // Repaint even while the engine is not visible: the launcher can ask
+            // for a redraw during a transition, and skipping it produced blank
+            // wallpaper frames.
             renderer.draw()
         }
 
         override fun onDestroy() {
             engineVisible = false
+            screenMonitor.stop()
+            unregisterPreferenceListener()
             lifecycle?.destroy()
             mainHandler.removeCallbacksAndMessages(null)
             pulseScheduled = false
-            disarmCapture()
+            cancelTransientArming()
             thermalCleanup?.invoke()
             thermalCleanup = null
             runCatching { unregisterReceiver(deviceStateReceiver) }
@@ -227,14 +252,14 @@ class CameraWallpaperService : WallpaperService() {
         /**
          * Home-screen taps: three quick taps arm burst capture for a bounded
          * window. The gesture rules live in [TripleTapArming]; this only applies
-         * the resulting state to the capture controller and settings.
+         * the resulting runtime state and never persists it.
          */
         override fun onTouchEvent(event: MotionEvent) {
             if (event.actionMasked != MotionEvent.ACTION_DOWN) return
             val now = SystemClock.elapsedRealtime()
-            when (val result = tripleTap.onTap(now, captureEnabled = settings.burstShots > 0)) {
+            val captureAvailable = settings.captureEnabled && settings.burstShots > 0
+            when (val result = tripleTap.onTap(now, captureEnabled = captureAvailable)) {
                 is TripleTapArming.TapResult.Armed -> {
-                    settings.captureArmed = true
                     captureController.setArmed(true)
                     mainHandler.removeCallbacks(disarmRunnable)
                     mainHandler.postDelayed(disarmRunnable, (result.untilMs - now).coerceAtLeast(0L))
@@ -247,21 +272,30 @@ class CameraWallpaperService : WallpaperService() {
 
         override fun onFrame(frame: ConvertedFrame) {
             mainHandler.post {
+                if (!engineVisible) {
+                    frame.markConsumed()
+                    return@post
+                }
                 renderer.onFrame(frame.preview, frame.rotationDegrees)
+                frame.markConsumed()
             }
-            inferenceEngine?.submitFrame(frame.detectionRgb)
+            // Detection bytes are only present when the worker was idle, so a
+            // busy detector never costs a 320x320 conversion.
+            frame.detectionRgb?.let { rgb -> inferenceEngine?.submitFrame(rgb) }
         }
 
         override fun onCameraStarted(previewSize: Size) {
             Log.i(TAG, "Camera captures at ${previewSize.width}x${previewSize.height}")
+            PipelineDiagnostics.cameraStarted("${previewSize.width}x${previewSize.height}")
         }
 
         override fun onCameraError(message: String, cause: Throwable?) {
             Log.w(TAG, message, cause)
+            PipelineDiagnostics.cameraError(message)
         }
 
         override fun onInferenceResult(result: InferenceResult) {
-            if (!engineVisible) return
+            if (lifecycle?.isRunning != true) return
             val now = SystemClock.elapsedRealtime()
             val event = tracker.update(result.detections, now)
             // One weak frame informs at most; only a confirmed warning grade is
@@ -285,7 +319,7 @@ class CameraWallpaperService : WallpaperService() {
 
             alerts.dispatch(hazard, decision)
             mainHandler.post {
-                if (!engineVisible) return@post
+                if (lifecycle?.isRunning != true) return@post
                 renderer.onHazard(now, decision.visual)
                 schedulePulse()
             }
@@ -293,6 +327,7 @@ class CameraWallpaperService : WallpaperService() {
 
         override fun onInferenceError(message: String) {
             Log.w(TAG, "Inference unavailable: $message")
+            PipelineDiagnostics.inferenceError(message)
         }
 
         /**
@@ -323,18 +358,36 @@ class CameraWallpaperService : WallpaperService() {
                     cooldownMs = settings.captureCooldownMs,
                 ),
             )
-            captureController.setArmed(settings.captureArmed)
-            if (!settings.captureArmed) {
+            captureController.setArmed(settings.captureEnabled)
+            if (!settings.captureEnabled) {
                 tripleTap.cancel()
                 mainHandler.removeCallbacks(disarmRunnable)
             }
         }
 
-        private fun disarmCapture() {
+        /** Drops the transient triple-tap arm without touching the preference. */
+        private fun cancelTransientArming() {
             tripleTap.cancel()
-            captureController.setArmed(false)
-            settings.captureArmed = false
             mainHandler.removeCallbacks(disarmRunnable)
+            captureController.setArmed(false)
+        }
+
+        private fun registerPreferenceListener() {
+            val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+                mainHandler.post {
+                    performance.mode = settings.performanceMode
+                    syncCaptureSettings()
+                    refreshDeviceState()
+                    renderer.draw()
+                }
+            }
+            preferenceListener = listener
+            settings.registerListener(listener)
+        }
+
+        private fun unregisterPreferenceListener() {
+            preferenceListener?.let { settings.unregisterListener(it) }
+            preferenceListener = null
         }
 
         private fun canWriteCaptures(): Boolean {

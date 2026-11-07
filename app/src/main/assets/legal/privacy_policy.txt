@@ -1,0 +1,93 @@
+ANDROID CLEAR — PRIVACY POLICY
+
+Effective date: 7 November 2026
+Applies to: Android Clear (com.edgevision.wallpaper), version 1.4.0 and later.
+
+1. INTRODUCTION
+
+Android Clear is a live wallpaper that shows a translucent rear-camera view on
+your home screen and runs on-device hazard detection. This policy explains what
+the app does with camera frames, what it stores, and what it never does.
+
+By installing and using Android Clear you agree to the practices described here.
+If you do not agree, do not use the app.
+
+2. CAMERA PROCESSING
+
+While the wallpaper is visible, the screen is on and the device is unlocked, the
+app opens the rear camera and processes frames entirely on your device:
+
+- each frame is converted into a low-resolution preview that is drawn under your
+  home screen;
+- a 320x320 RGB copy is passed to a bundled TensorFlow Lite model
+  (EfficientDet-Lite0) running on the device through an embedded Python runtime;
+- the resulting boxes are evaluated on the device to decide whether to pulse the
+  border, play a short tone, vibrate, or speak an alert.
+
+Frames exist only in memory. They are not recorded, not written to storage and
+not transmitted anywhere. The camera is closed when the wallpaper is hidden, the
+screen turns off, or the lock screen is showing.
+
+3. AUTOMATIC THREAT CAPTURE (OFF BY DEFAULT)
+
+Automatic threat capture is an opt-in feature that is off unless you switch it
+on. When it is on and a hazard is confirmed, the app saves a short JPEG burst to
+Pictures/Android Clear/Threat Captures through Android's MediaStore.
+
+Those images stay on your device, in your own picture storage, until you delete
+them. They are never uploaded by the app. You can delete them with any gallery
+or file app, and you can switch the feature off at any time.
+
+4. PERMISSIONS AND WHY THEY ARE REQUESTED
+
+- Camera (android.permission.CAMERA): required for the live preview and for
+  on-device hazard detection. Without it the wallpaper shows a transparent
+  surface and no detection runs.
+- Vibration (android.permission.VIBRATE): used for haptic hazard alerts.
+- Storage, legacy devices only (android.permission.WRITE_EXTERNAL_STORAGE,
+  capped at Android 9 / API 28): needed to save threat captures on older
+  Android versions. Android 10 and later use scoped MediaStore access and do not
+  request this permission.
+
+Android Clear does not request or use the microphone, location, contacts,
+calendar, SMS, call state, activity recognition, body sensors, or accessibility
+services. It does not read your photos, documents or other files; its only
+storage write is the capture burst you explicitly enable.
+
+5. NETWORK ACTIVITY AND THIRD PARTIES
+
+Android Clear contains no analytics, advertising, crash-reporting or tracking
+SDKs, and requires no account. Frames, detections, settings and captures are not
+sent to the developer or to any third party. The app declares no network
+permission and performs no network requests.
+
+Google Play itself processes installation, update and licence information under
+Google's own privacy policy; that processing is outside the app.
+
+6. RETENTION AND DELETION
+
+- Settings live in the app's private storage on your device.
+- Threat captures live in your shared picture storage until you delete them.
+- Clearing the app's data (Settings > Apps > Android Clear > Storage > Clear
+  data) resets all settings and consent choices.
+- Uninstalling Android Clear removes its private data. Captured images remain in
+  your gallery until you delete them, because they are your files.
+
+7. CHILDREN
+
+Android Clear is a general-purpose assistive utility and is not directed to
+children under 13. It collects no personal information from any user.
+
+8. CHANGES TO THIS POLICY
+
+We may update this policy to reflect changes in the app or in legal
+requirements. The effective date above changes when we do, and the current text
+ships inside the app under Settings > About & Legal > Privacy Policy.
+
+9. CONTACT
+
+Questions about this policy or the app's data handling:
+
+Developer: Android Clear Team
+Email: hakimafalul@gmail.com
+Address: 37/2, Pereira Lane, Colombo 6, Sri Lanka

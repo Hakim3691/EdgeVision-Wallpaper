@@ -1,0 +1,18 @@
+SAFETY & EMERGENCY NOTICE
+
+Android Clear is an informational tool, not a life-safety device.
+
+Do not rely on this application for emergency response, navigation in high-risk
+environments, or as a replacement for required safety equipment, a white cane, a
+guide dog, or your own attention.
+
+The application does not contact emergency services automatically and cannot call
+for help. Detection is probabilistic: it can miss real hazards and it can report
+hazards that are not there. Low light, rain, a dirty or covered lens, motion and
+device performance all reduce accuracy.
+
+Automatic threat capture, when enabled, stores images on your device. You are
+responsible for those images and for how you use them.
+
+By proceeding, you acknowledge that you remain fully responsible for your personal
+safety and surroundings at all times.

@@ -53,6 +53,12 @@ object PerformanceGovernor {
     const val INTERVAL_SAVER_MS = 250L
     const val INTERVAL_CRITICAL_MS = 500L
 
+    /**
+     * Display cadence, independent of detection. 30 fps is what the live view
+     * needs; slowing detection for battery or heat must not freeze it.
+     */
+    const val PREVIEW_INTERVAL_MS = 33L
+
     private const val LOW_BATTERY_PERCENT = 15
 
     fun profile(inputs: PerformanceInputs): PerformanceProfile {
@@ -89,7 +95,7 @@ object PerformanceGovernor {
         return PerformanceProfile(
             mode = effectiveMode,
             inferenceIntervalMs = interval,
-            previewFrameIntervalMs = interval,
+            previewFrameIntervalMs = PREVIEW_INTERVAL_MS,
             detectionEnabled = true,
             label = label(effectiveMode, inputs, interval),
         )

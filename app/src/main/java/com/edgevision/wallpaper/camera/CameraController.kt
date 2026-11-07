@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.ImageFormat
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
@@ -11,7 +12,7 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
-import android.hardware.display.DisplayManager
+import android.hardware.camera2.params.StreamConfigurationMap
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
@@ -21,17 +22,28 @@ import android.util.Range
 import android.util.Size
 import android.view.Display
 import android.view.Surface
+import android.hardware.display.DisplayManager
 import androidx.core.content.ContextCompat
+import com.edgevision.wallpaper.diagnostics.PipelineDiagnostics
 import kotlin.math.roundToInt
 
 /**
- * Owns Camera2 hardware for the wallpaper. The capture stream is capped at
- * 1280x720 / 30 fps. Frames are converted at most 15 times per second, and the
- * detector input is a 320x320 center crop produced by [YuvFrameConverter].
+ * Owns Camera2 hardware for the wallpaper.
+ *
+ * Preview and detection run on independent cadences: the live view updates at
+ * [setPreviewIntervalMs] (33 ms by default) while the detector receives a frame
+ * every [setDetectionIntervalMs]. Coupling the two — as the previous revision did
+ * — made the wallpaper drop to 1–4 fps whenever the performance governor slowed
+ * detection, which is what made the live view look like a still image.
+ *
+ * Camera failures are retried with bounded backoff instead of killing the stream
+ * permanently: a face-unlock attempt or another app briefly taking the sensor is
+ * a normal event for a wallpaper, not a terminal error.
  */
 class CameraController(
     private val context: Context,
     private val listener: Listener,
+    private val detectionReady: () -> Boolean = { true },
 ) {
 
     interface Listener {
@@ -41,6 +53,7 @@ class CameraController(
     }
 
     private val lock = Any()
+    private val poolLock = Any()
     private val cameraThread = HandlerThread("edgevision-camera").apply { start() }
     private val cameraHandler = Handler(cameraThread.looper)
     private val converter = YuvFrameConverter()
@@ -55,22 +68,41 @@ class CameraController(
     private var previewSize: Size? = null
     private var fpsRange: Range<Int>? = null
     private var continuousAfSupported = false
-    private var lastProcessedAtMs = 0L
+
+    private var lastPreviewAtMs = 0L
+    private var lastDetectionAtMs = 0L
+    private var retryAttempt = 0
+
+    /** Detection cadence, driven by the performance governor. */
+    @Volatile
+    private var detectionIntervalMs = DEFAULT_DETECTION_INTERVAL_MS
+
+    /** Display cadence. Never widened by the governor; it only affects detection. */
+    @Volatile
+    private var previewIntervalMs = DEFAULT_PREVIEW_INTERVAL_MS
+
+    /** Reusable preview bitmaps. The renderer must call [ConvertedFrame.markConsumed]. */
+    private var previewPool: Array<Bitmap?> = arrayOfNulls(PREVIEW_POOL_SIZE)
+    private var previewInUse = BooleanArray(PREVIEW_POOL_SIZE)
+    private var poolWidth = 0
+    private var poolHeight = 0
+
+    private var detectionBuffer = ByteArray(0)
 
     /** JPEG output for burst capture, added to the same session as the preview. */
     private var jpegReader: ImageReader? = null
     private var pendingJpeg: ((ByteArray?) -> Unit)? = null
 
-    /** Detection cadence, driven by the performance governor. */
-    @Volatile
-    private var frameIntervalMs = FRAME_INTERVAL_MS
+    fun setDetectionIntervalMs(intervalMs: Long) {
+        detectionIntervalMs = intervalMs.coerceAtLeast(16L)
+    }
 
     /**
-     * Applies the interval chosen by [com.edgevision.wallpaper.diagnostics.PerformanceController].
-     * Detection is throttled, never disabled: the slowest profile still detects.
+     * Applies the display cadence. Kept separate from detection so a thermal or
+     * battery profile can slow inference without freezing the wallpaper.
      */
-    fun setDetectionIntervalMs(intervalMs: Long) {
-        frameIntervalMs = intervalMs.coerceAtLeast(16L)
+    fun setPreviewIntervalMs(intervalMs: Long) {
+        previewIntervalMs = intervalMs.coerceIn(16L, 100L)
     }
 
     /**
@@ -114,14 +146,14 @@ class CameraController(
     @Synchronized
     fun start() {
         if (running) return
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
+        if (!hasCameraPermission()) {
             listener.onCameraError("Camera permission has not been granted")
             return
         }
         running = true
-        lastProcessedAtMs = 0L
+        retryAttempt = 0
+        lastPreviewAtMs = 0L
+        lastDetectionAtMs = 0L
         cameraHandler.post(openRunnable)
     }
 
@@ -133,16 +165,29 @@ class CameraController(
     @Synchronized
     fun stop() {
         running = false
+        retryAttempt = 0
         cameraHandler.removeCallbacks(openRunnable)
         closeHardware()
+        PipelineDiagnostics.cameraStopped()
     }
 
     fun close() {
         stop()
+        synchronized(poolLock) {
+            previewPool = arrayOfNulls(PREVIEW_POOL_SIZE)
+            previewInUse = BooleanArray(PREVIEW_POOL_SIZE)
+            poolWidth = 0
+            poolHeight = 0
+        }
         cameraThread.quitSafely()
     }
 
+    private fun hasCameraPermission(): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+
     private fun closeHardware() {
+        var pending: ((ByteArray?) -> Unit)? = null
         synchronized(lock) {
             captureSession?.let { session ->
                 runCatching { session.stopRepeating() }
@@ -163,43 +208,77 @@ class CameraController(
                 runCatching { reader.close() }
             }
             jpegReader = null
+            pending = pendingJpeg
+            pendingJpeg = null
         }
+        // Let a pending burst fail fast instead of waiting for a frame that will
+        // never arrive. Invoked outside the lock so the sink cannot deadlock us.
+        pending?.invoke(null)
     }
 
-    private fun fail(message: String, cause: Throwable? = null) {
-        val shouldNotify = running
-        running = false
+    /**
+     * Closes the hardware and retries. Fast, bounded retries handle transient
+     * contention; after them a slow retry keeps the wallpaper recoverable without
+     * spinning on a camera another app is holding.
+     */
+    private fun handleFailure(message: String, cause: Throwable? = null) {
+        val wasRunning = running
         closeHardware()
-        if (shouldNotify) {
+        if (!wasRunning) return
+
+        if (!hasCameraPermission()) {
+            running = false
             listener.onCameraError(message, cause)
+            return
         }
+
+        val delayMs = if (retryAttempt < MAX_FAST_RETRIES) {
+            fastRetryDelayMs(retryAttempt)
+        } else {
+            SLOW_RETRY_MS
+        }
+        if (retryAttempt < MAX_FAST_RETRIES) retryAttempt += 1
+
+        listener.onCameraError(message, cause)
+        Log.i(TAG, "Camera unavailable; retrying in ${delayMs}ms")
+        cameraHandler.removeCallbacks(openRunnable)
+        cameraHandler.postDelayed(openRunnable, delayMs)
     }
+
+    private fun fastRetryDelayMs(attempt: Int): Long =
+        (RETRY_BASE_MS shl attempt.coerceIn(0, 4)).coerceAtMost(RETRY_MAX_MS)
 
     @SuppressLint("MissingPermission")
     private fun openCamera() {
-        if (!running) return
+        if (!running || cameraDevice != null) return
+        if (!hasCameraPermission()) {
+            running = false
+            listener.onCameraError("Camera permission has not been granted")
+            return
+        }
+
         val manager = context.getSystemService(CameraManager::class.java)
             ?: run {
-                fail("Camera service is unavailable")
+                handleFailure("Camera service is unavailable")
                 return
             }
 
         try {
             val cameraId = selectCameraId(manager) ?: run {
-                fail("No camera is available on this device")
+                handleFailure("No camera is available on this device")
                 return
             }
             val characteristics = manager.getCameraCharacteristics(cameraId)
-            val streamConfiguration = characteristics
+            val streamConfiguration: StreamConfigurationMap = characteristics
                 .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
                 ?: run {
-                    fail("Camera stream configuration is unavailable")
+                    handleFailure("Camera stream configuration is unavailable")
                     return
                 }
             val size = selectPreviewSize(
                 streamConfiguration.getOutputSizes(ImageFormat.YUV_420_888) ?: emptyArray(),
             ) ?: run {
-                fail("Camera does not expose a YUV preview size")
+                handleFailure("Camera does not expose a YUV preview size")
                 return
             }
 
@@ -234,9 +313,11 @@ class CameraController(
                 imageReader = reader
             }
 
+            lastPreviewAtMs = 0L
+            lastDetectionAtMs = 0L
             manager.openCamera(cameraId, deviceCallback, cameraHandler)
         } catch (throwable: Throwable) {
-            fail("Could not open the camera: ${throwable.message}", throwable)
+            handleFailure("Could not open the camera: ${throwable.message}", throwable)
         }
     }
 
@@ -254,12 +335,12 @@ class CameraController(
 
         override fun onDisconnected(camera: CameraDevice) {
             camera.close()
-            fail("Camera was disconnected")
+            handleFailure("Camera was disconnected")
         }
 
         override fun onError(camera: CameraDevice, error: Int) {
             camera.close()
-            fail("Camera device error $error")
+            handleFailure("Camera device error $error")
         }
     }
 
@@ -294,13 +375,13 @@ class CameraController(
 
                     override fun onConfigureFailed(session: CameraCaptureSession) {
                         session.close()
-                        fail("Camera capture session configuration failed")
+                        handleFailure("Camera capture session configuration failed")
                     }
                 },
                 cameraHandler,
             )
         } catch (throwable: Throwable) {
-            fail("Could not create a camera session: ${throwable.message}", throwable)
+            handleFailure("Could not create a camera session: ${throwable.message}", throwable)
         }
     }
 
@@ -323,44 +404,83 @@ class CameraController(
             }.build()
 
             session.setRepeatingRequest(request, null, cameraHandler)
+            retryAttempt = 0
+            lastPreviewAtMs = 0L
+            lastDetectionAtMs = 0L
             listener.onCameraStarted(Size(reader.width, reader.height))
         } catch (throwable: Throwable) {
-            fail("Could not start camera frames: ${throwable.message}", throwable)
+            handleFailure("Could not start camera frames: ${throwable.message}", throwable)
         }
     }
 
     private fun handleImage(reader: ImageReader) {
         if (!running) return
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastProcessedAtMs < frameIntervalMs) return
-
         val image = try {
             reader.acquireLatestImage()
         } catch (throwable: Throwable) {
             return
         } ?: return
 
+        // Every delivered image is closed, even when it is not converted. Leaving
+        // it in the queue stalls the producer between throttle windows.
         image.use { frame ->
             if (!running) return
-            lastProcessedAtMs = now
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastPreviewAtMs < previewIntervalMs) return
+
+            val previewWidth = YuvFrameConverter.PREVIEW_MAX_WIDTH
+            val previewHeight = converter.previewHeightFor(frame)
+            val bitmap = acquirePreview(previewWidth, previewHeight) ?: return
+            val detectionDue = now - lastDetectionAtMs >= detectionIntervalMs && detectionReady()
             try {
-                val sourceAspect = frame.width.toFloat() / frame.height.toFloat()
-                val previewWidth = PREVIEW_MAX_WIDTH
-                val previewHeight = (previewWidth / sourceAspect)
-                    .roundToInt()
-                    .coerceAtLeast(2)
                 val converted = converter.convert(
                     image = frame,
                     previewWidth = previewWidth,
                     previewHeight = previewHeight,
                     detectionSize = DETECTION_SIZE,
                     rotationDegrees = rotationDegrees(),
+                    preview = bitmap,
+                    detectionTarget = if (detectionDue) ensureDetectionBuffer() else null,
+                    onConsumed = { releasePreview(bitmap) },
                 )
+                lastPreviewAtMs = now
+                if (detectionDue) lastDetectionAtMs = now
                 listener.onFrame(converted)
             } catch (throwable: Throwable) {
+                releasePreview(bitmap)
                 Log.w(TAG, "Frame conversion failed", throwable)
             }
         }
+    }
+
+    private fun acquirePreview(width: Int, height: Int): Bitmap? = synchronized(poolLock) {
+        if (poolWidth != width || poolHeight != height) {
+            previewPool = arrayOfNulls(PREVIEW_POOL_SIZE)
+            previewInUse = BooleanArray(PREVIEW_POOL_SIZE)
+            poolWidth = width
+            poolHeight = height
+        }
+        val index = previewInUse.indexOfFirst { !it }
+        if (index < 0) return null
+        val bitmap = previewPool[index]
+            ?: Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
+                previewPool[index] = it
+            }
+        previewInUse[index] = true
+        bitmap
+    }
+
+    private fun releasePreview(bitmap: Bitmap) {
+        synchronized(poolLock) {
+            val index = previewPool.indexOfFirst { it === bitmap }
+            if (index >= 0) previewInUse[index] = false
+        }
+    }
+
+    private fun ensureDetectionBuffer(): ByteArray {
+        val size = DETECTION_SIZE * DETECTION_SIZE * 3
+        if (detectionBuffer.size != size) detectionBuffer = ByteArray(size)
+        return detectionBuffer
     }
 
     private fun handleJpeg(reader: ImageReader) {
@@ -421,7 +541,6 @@ class CameraController(
         if (sizes.isEmpty()) return null
         val capped = sizes.filter { it.width <= 1280 && it.height <= 720 }
         if (capped.isEmpty()) {
-            // No <=720p stream: choose the smallest available stream, never the largest.
             return sizes.minByOrNull { it.width.toLong() * it.height }
         }
         return capped
@@ -441,8 +560,13 @@ class CameraController(
 
     companion object {
         private const val TAG = "CameraController"
-        private const val FRAME_INTERVAL_MS = 66L
-        private const val PREVIEW_MAX_WIDTH = 512
+        private const val DEFAULT_PREVIEW_INTERVAL_MS = 33L
+        private const val DEFAULT_DETECTION_INTERVAL_MS = 100L
         private const val DETECTION_SIZE = 320
+        private const val PREVIEW_POOL_SIZE = 3
+        private const val MAX_FAST_RETRIES = 6
+        private const val RETRY_BASE_MS = 500L
+        private const val RETRY_MAX_MS = 8_000L
+        private const val SLOW_RETRY_MS = 15_000L
     }
 }

@@ -3,21 +3,37 @@ package com.edgevision.wallpaper.camera
 import android.graphics.Bitmap
 import android.media.Image
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-data class ConvertedFrame(
+/**
+ * One converted camera frame.
+ *
+ * The preview bitmap is owned by [CameraController]'s buffer pool, not by the
+ * renderer: the consumer must call [markConsumed] once it has finished drawing so
+ * the buffer can be reused for a later frame. Never recycle the bitmap.
+ */
+class ConvertedFrame(
     val preview: Bitmap,
-    val detectionRgb: ByteArray,
+    val detectionRgb: ByteArray?,
     val rotationDegrees: Int,
-)
+    private val onConsumed: () -> Unit,
+) {
+    private val consumed = AtomicBoolean(false)
+
+    fun markConsumed() {
+        if (consumed.compareAndSet(false, true)) onConsumed()
+    }
+}
 
 /**
  * Converts Camera2 YUV_420_888 images without RenderScript or GPU shaders.
  *
- * The preview is rendered at a bounded 512px width, while the detector gets a
- * center-cropped 320x320 RGB buffer. Plane data is copied out once per frame so
- * the per-pixel loops never call ByteBuffer.get() hundreds of thousands of times.
+ * The preview is written into a caller-supplied bitmap so steady-state rendering
+ * does not allocate, and the detector input is only produced when a target buffer
+ * is supplied. That keeps the camera thread free of the ~300 KB per-frame garbage
+ * that previously caused GC stalls in the live view.
  */
 class YuvFrameConverter {
 
@@ -32,6 +48,9 @@ class YuvFrameConverter {
         previewHeight: Int,
         detectionSize: Int,
         rotationDegrees: Int,
+        preview: Bitmap,
+        detectionTarget: ByteArray?,
+        onConsumed: () -> Unit,
     ): ConvertedFrame {
         val yPlane = image.planes[0]
         val uPlane = image.planes[1]
@@ -59,14 +78,46 @@ class YuvFrameConverter {
                 )
             }
         }
+        preview.setPixels(pixels, 0, previewWidth, 0, 0, previewWidth, previewHeight)
 
-        val bitmap = Bitmap.createBitmap(previewWidth, previewHeight, Bitmap.Config.ARGB_8888)
-        bitmap.setPixels(pixels, 0, previewWidth, 0, 0, previewWidth, previewHeight)
+        if (detectionTarget != null) {
+            writeDetectionInput(
+                target = detectionTarget,
+                detectionSize = detectionSize,
+                sourceWidth = sourceWidth,
+                sourceHeight = sourceHeight,
+                yPlaneRowStride = yPlane.rowStride,
+                yPlanePixelStride = yPlane.pixelStride,
+                uPlaneRowStride = uPlane.rowStride,
+                uPlanePixelStride = uPlane.pixelStride,
+                vPlaneRowStride = vPlane.rowStride,
+                vPlanePixelStride = vPlane.pixelStride,
+            )
+        }
 
+        return ConvertedFrame(
+            preview = preview,
+            detectionRgb = detectionTarget,
+            rotationDegrees = rotationDegrees,
+            onConsumed = onConsumed,
+        )
+    }
+
+    private fun writeDetectionInput(
+        target: ByteArray,
+        detectionSize: Int,
+        sourceWidth: Int,
+        sourceHeight: Int,
+        yPlaneRowStride: Int,
+        yPlanePixelStride: Int,
+        uPlaneRowStride: Int,
+        uPlanePixelStride: Int,
+        vPlaneRowStride: Int,
+        vPlanePixelStride: Int,
+    ) {
         val cropSide = min(sourceWidth, sourceHeight)
         val cropLeft = (sourceWidth - cropSide) / 2
         val cropTop = (sourceHeight - cropSide) / 2
-        val detectionRgb = ByteArray(detectionSize * detectionSize * 3)
         var outputIndex = 0
         for (outY in 0 until detectionSize) {
             val sourceY = cropTop + (outY.toLong() * cropSide / detectionSize).toInt()
@@ -75,21 +126,24 @@ class YuvFrameConverter {
                 val sourceX = cropLeft + (outX.toLong() * cropSide / detectionSize).toInt()
                     .coerceIn(0, sourceWidth - 1)
                 val argb = yuvToArgb(
-                    sample(yBytes, sourceX, sourceY, yPlane.rowStride, yPlane.pixelStride),
-                    sample(uBytes, sourceX / 2, sourceY / 2, uPlane.rowStride, uPlane.pixelStride),
-                    sample(vBytes, sourceX / 2, sourceY / 2, vPlane.rowStride, vPlane.pixelStride),
+                    sample(yBytes, sourceX, sourceY, yPlaneRowStride, yPlanePixelStride),
+                    sample(uBytes, sourceX / 2, sourceY / 2, uPlaneRowStride, uPlanePixelStride),
+                    sample(vBytes, sourceX / 2, sourceY / 2, vPlaneRowStride, vPlanePixelStride),
                 )
-                detectionRgb[outputIndex++] = ((argb shr 16) and 0xFF).toByte()
-                detectionRgb[outputIndex++] = ((argb shr 8) and 0xFF).toByte()
-                detectionRgb[outputIndex++] = (argb and 0xFF).toByte()
+                target[outputIndex++] = ((argb shr 16) and 0xFF).toByte()
+                target[outputIndex++] = ((argb shr 8) and 0xFF).toByte()
+                target[outputIndex++] = (argb and 0xFF).toByte()
             }
         }
+    }
 
-        return ConvertedFrame(
-            preview = bitmap,
-            detectionRgb = detectionRgb,
-            rotationDegrees = rotationDegrees,
-        )
+    /**
+     * Scales the source frame to a bounded preview width and fills [preview].
+     * The returned height is what the caller must size the bitmap to.
+     */
+    fun previewHeightFor(image: Image): Int {
+        val aspect = image.width.toFloat() / image.height.toFloat()
+        return (PREVIEW_MAX_WIDTH / aspect).roundToInt().coerceAtLeast(2)
     }
 
     private fun ensurePixels(size: Int): IntArray {
@@ -128,5 +182,9 @@ class YuvFrameConverter {
         val g = ((298 * c - 100 * d - 208 * e + 128) shr 8).coerceIn(0, 255)
         val b = ((298 * c + 516 * d + 128) shr 8).coerceIn(0, 255)
         return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+    }
+
+    companion object {
+        const val PREVIEW_MAX_WIDTH = 512
     }
 }

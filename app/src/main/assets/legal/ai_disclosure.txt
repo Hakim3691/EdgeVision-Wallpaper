@@ -1,0 +1,23 @@
+HOW AI DETECTION WORKS
+
+Automated hazard recognition capabilities and limitations.
+
+Android Clear uses an on-device machine-learning model (EfficientDet-Lite0,
+running through TensorFlow Lite inside the app's embedded Python runtime) to
+identify environmental hazards and obstacles in real time.
+
+Please note that automated detection is probabilistic and may not identify every
+obstacle or hazard. Weather conditions, poor lighting, camera lens obstructions,
+motion blur, a dirty lens and sudden movements can all reduce detection accuracy.
+The model recognises a fixed set of trained classes: vehicles (bicycle, car,
+motorcycle, bus, train, truck) and vertical street fixtures (traffic light, fire
+hydrant, stop sign, parking meter). It does not understand every object, does not
+measure distance in metres, and does not know whether a detected object is
+actually in your path.
+
+All processing happens on your device. No frames, images or detections are
+uploaded, and the app contains no analytics or advertising SDKs.
+
+The app is designed to assist your environmental awareness, not to replace your
+judgement. Always rely on visual verification and personal discretion, and never
+use Android Clear as your only source of information about your surroundings.
