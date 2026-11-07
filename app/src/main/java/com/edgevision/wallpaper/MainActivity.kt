@@ -7,13 +7,18 @@ import android.content.Context
 import android.content.DialogInterface
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.app.usage.UsageStatsManager
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
+import android.view.View
 import android.widget.CheckBox
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -27,6 +32,10 @@ import com.edgevision.wallpaper.legal.LegalActivity
 import com.edgevision.wallpaper.settings.AssistSettings
 import com.edgevision.wallpaper.wallpaper.CameraWallpaperService
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import android.content.ServiceConnection
+import android.util.Log
+import android.widget.CompoundButton
+import com.google.android.material.button.MaterialButtonToggleGroup
 
 class MainActivity : AppCompatActivity() {
 
@@ -37,9 +46,15 @@ class MainActivity : AppCompatActivity() {
     private var suppressCaptureToggle = false
 
     /** Foreground service binding */
-    private lateinit var foregroundServiceConnection: android.content.ServiceConnection
+    private lateinit var foregroundServiceConnection: ServiceConnection
     private var foregroundServiceBinder: CameraPreviewForegroundService.LocalBinder? = null
-            
+
+    /** Runs on UI thread; polls UsageStats to drive overlay visibility */
+    private val overlayVisibilityRunnable = Runnable {
+        updateOverlayVisibilityFromStats()
+    }
+    private val foregroundServiceHandler = Handler(Looper.getMainLooper())
+
     private val requestCameraPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -85,7 +100,6 @@ class MainActivity : AppCompatActivity() {
             if (hasCameraPermission()) {
                 refreshStatus()
             } else {
-                // Prominent in-app disclosure before the system permission prompt.
                 showCameraRationale()
             }
         }
@@ -94,12 +108,27 @@ class MainActivity : AppCompatActivity() {
             binding.cardPowerLimit.isVisible = false
         }
         binding.btnOpenBatterySettings.setOnClickListener { openAppSettings() }
-        binding.btnSetWallpaper.setOnClickListener {
-            openLiveWallpaperPicker()
-        }
+        binding.btnSetWallpaper.setOnClickListener { openLiveWallpaperPicker() }
         binding.btnGrantStorage.setOnClickListener {
             requestStoragePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
+
+        // Bind foreground service for camera overlay
+        foregroundServiceConnection = object : ServiceConnection {
+            // Note: className may be null in some test environments (Robolectric)
+            // even though the Android interface declares it as non-null
+            override fun onServiceConnected(className: ComponentName?, ibinder: IBinder) {
+                foregroundServiceBinder = ibinder as CameraPreviewForegroundService.LocalBinder?
+                if (foregroundServiceBinder != null) {
+                    Log.d("MainActivity", "Foreground service bound successfully")
+                }
+            }
+
+            override fun onServiceDisconnected(className: ComponentName?) {
+                foregroundServiceBinder = null
+            }
+        }
+        bindService(Intent(this, CameraPreviewForegroundService::class.java), foregroundServiceConnection, Context.BIND_AUTO_CREATE)
 
         // Capture settings are read by the wallpaper engine; this screen only
         // persists them and shows the current values. Turning capture on for the
@@ -132,8 +161,7 @@ class MainActivity : AppCompatActivity() {
             updateCaptureLabels()
         }
         binding.togglePerformanceMode.addOnButtonCheckedListener { _, checkedId, isChecked ->
-            if (!isChecked) return@addOnButtonCheckedListener
-            modeForButton(checkedId)?.let { settings.performanceMode = it }
+            if (isChecked) modeForButton(checkedId)?.let { settings.performanceMode = it }
         }
 
         binding.btnAboutLegal.setOnClickListener {
@@ -147,6 +175,12 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshStatus()
+        foregroundServiceHandler.postDelayed(overlayVisibilityRunnable, 2000)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        foregroundServiceHandler.removeCallbacks(overlayVisibilityRunnable)
     }
 
     private fun refreshStatus() {
@@ -177,8 +211,6 @@ class MainActivity : AppCompatActivity() {
             isPowerSaveMode() && !settings.powerNoticeDismissed
 
         refreshCaptureUi()
-
-
     }
 
     private fun refreshCaptureUi() {
@@ -291,7 +323,7 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton(R.string.camera_rationale_grant) { _, which ->
                 requestCameraPermission.launch(Manifest.permission.CAMERA)
             }
-            .setNegativeButton(R.string.action_not_now, null) 
+            .setNegativeButton(R.string.action_not_now, null)
             .show()
     }
 
@@ -347,8 +379,6 @@ class MainActivity : AppCompatActivity() {
     }
 
 
-
-
     private fun bindForegroundService() {
         val intent = Intent(this, CameraPreviewForegroundService::class.java)
         intent.action = "com.edgevision.wallpaper.action.START_OVERLAY"
@@ -381,6 +411,15 @@ class MainActivity : AppCompatActivity() {
         val startsWithPrefix = prefixPatterns.any { topPackage.startsWith(it) }
         val isLauncher = launcherPackages.contains(topPackage)
         return startsWithPrefix || isLauncher
+    }
+
+    /** Poll UsageStatsManager for the top foreground package and update overlay visibility */
+    private fun updateOverlayVisibilityFromStats() {
+        val um = getSystemService(UsageStatsManager::class.java) as UsageStatsManager
+        val endTime = System.currentTimeMillis()
+        val startTime = endTime - 16 * 60 * 1000 // last 16 minutes
+        // Overlay visibility update - requires PACKAGE_USAGE_STATS permission
+        // Method placeholder - full implementation requires permission and UsageStats handling
     }
 
     private companion object {
