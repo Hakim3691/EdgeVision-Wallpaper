@@ -8,18 +8,20 @@ interface EngineResource {
 /**
  * Single authority over whether the camera and detector may run.
  *
- * Four independent inputs decide it, and none is trustworthy alone:
+ * Three independent inputs decide it:
  *
  *  - wallpaper visibility (the launcher can hide the wallpaper while the surface
  *    still exists),
  *  - surface availability (the surface can be destroyed while still "visible"),
- *  - screen interactivity (the display can be off while the engine is bound),
- *  - keyguard state (the lock screen must be able to use the camera for face
- *    unlock; holding it there breaks biometrics).
+ *  - screen interactivity (the display can be off while the engine is bound).
  *
- * Resources run only when all four agree. Keyguard-locked while otherwise visible
- * is reported as [State.PAUSED] so a screen-on event on the lock screen can never
- * reopen the camera behind the keyguard.
+ * The keyguard is deliberately *not* part of the gate. A locked, awake screen is
+ * still a screen the wallpaper is drawn on, and stopping there froze the last
+ * frame for the whole lock screen. Holding the rear camera does not block face
+ * unlock on devices that authenticate with the front camera, and on devices that
+ * do preempt the sensor the camera reports a disconnect and the controller retries
+ * once the sensor is free again. That makes the pause coincide with the biometric
+ * event instead of the entire lock screen.
  *
  * The class is deliberately Android-free so the Gherkin scenarios can run on the
  * JVM with fakes.
@@ -53,6 +55,11 @@ class WallpaperEngineController(
     val isRunning: Boolean
         get() = resourcesRunning
 
+    /** Informational: used to report why the pipeline is paused, not to gate it. */
+    @get:Synchronized
+    val isKeyguardLocked: Boolean
+        get() = keyguardLocked
+
     @Synchronized
     fun onVisibilityChanged(isVisible: Boolean) {
         if (destroyed) return
@@ -68,8 +75,11 @@ class WallpaperEngineController(
     }
 
     /**
-     * Applies screen and keyguard state. A locked keyguard always pauses the
-     * pipeline, regardless of visibility, so biometric unlock keeps the camera.
+     * Applies screen and keyguard state.
+     *
+     * A locked keyguard does not stop an already-running pipeline; only the screen
+     * going dark does. The keyguard flag is retained for diagnostics so the status
+     * line can distinguish "screen off" from "biometric prompt".
      */
     @Synchronized
     fun onScreenStateChanged(interactive: Boolean, keyguardLocked: Boolean) {
@@ -93,7 +103,7 @@ class WallpaperEngineController(
 
     private fun reconcile() {
         if (destroyed) return
-        val shouldRun = visible && surfaceAvailable && screenInteractive && !keyguardLocked
+        val shouldRun = visible && surfaceAvailable && screenInteractive
         if (shouldRun && !resourcesRunning) {
             try {
                 camera.start()
@@ -107,17 +117,13 @@ class WallpaperEngineController(
                 state = State.IDLE
                 onError("Could not start the camera pipeline: ${throwable.message}")
             }
-        } else if (!shouldRun && resourcesRunning) {
-            stopResources()
-            state = when {
-                !visible -> State.HIDDEN
-                !screenInteractive || keyguardLocked -> State.PAUSED
-                else -> State.IDLE
-            }
         } else if (!shouldRun) {
+            if (resourcesRunning) {
+                stopResources()
+            }
             state = when {
                 !visible -> State.HIDDEN
-                !screenInteractive || keyguardLocked -> State.PAUSED
+                !screenInteractive -> State.PAUSED
                 else -> State.IDLE
             }
         }

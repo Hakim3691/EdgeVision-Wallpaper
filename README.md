@@ -52,11 +52,16 @@ Key files:
 
 `WallpaperService.Engine.onVisibilityChanged` and `ScreenStateMonitor` both feed
 `WallpaperEngineController`, which is the single owner of the running state. It
-runs hardware only when the wallpaper is visible, the surface exists, the screen
-is interactive **and** the keyguard is unlocked. That last condition matters:
-`ACTION_SCREEN_ON` fires for the lock screen before biometric unlock, so resuming
-there would take the camera away from face unlock. On any failing condition it
-stops inference first, then closes the session/device/reader synchronously.
+runs hardware whenever the wallpaper is visible, the surface exists and the screen
+is interactive. The keyguard is deliberately not part of that gate: an awake lock
+screen still shows the wallpaper, and pausing there froze the last frame for the
+whole lock screen. Holding the rear camera does not block face unlock, and if a
+device does preempt the sensor the camera reports a disconnect and
+`CameraManager.AvailabilityCallback` reopens it the moment it is free.
+`ScreenStateMonitor` also re-reads the real power and keyguard state every 1.5 s,
+so an unlock broadcast that never arrives cannot strand the pipeline. On any
+failing condition it stops inference first, then closes the session/device/reader
+synchronously.
 
 Hiding the wallpaper keeps the last preview frame so the launcher repaints
 instantly, and it keeps the Python/TFLite detector warm: only in-flight results
@@ -274,6 +279,10 @@ bash scripts/check_apk_size.sh app/build/outputs/apk/release/app-arm64-v8a-relea
   live camera state and the last error. A camera-type foreground service (which
   would add a persistent notification) is still not implemented; if the status
   reads `camera=error` on a device, that is the remaining workaround to add.
+- **Lock-screen rendering:** Android may draw a static snapshot of the home
+  wallpaper on the lock screen. The app keeps the camera running there and pauses
+  only when the display is off or another client holds the sensor; a device that
+  snapshots the surface cannot be forced to animate by the app.
 - The COCO model has no bespoke `pole` class. Pole-like hazards come from the
   mapped street-fixture classes above; custom classes require retraining.
 - Detection is throttled and frame-dropping by design. Alerts are advisory and may

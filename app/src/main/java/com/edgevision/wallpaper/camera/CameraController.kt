@@ -92,6 +92,33 @@ class CameraController(
     /** JPEG output for burst capture, added to the same session as the preview. */
     private var jpegReader: ImageReader? = null
     private var pendingJpeg: ((ByteArray?) -> Unit)? = null
+    private var availabilityRegistered = false
+
+    /**
+     * Reopens the sensor the moment it is released.
+     *
+     * The system (or another app) can take the camera for a face-unlock attempt.
+     * Without this callback the pipeline would wait for the slow retry, which is
+     * the difference between a live wallpaper and a frozen frame after unlock.
+     */
+    private val availabilityCallback = object : CameraManager.AvailabilityCallback() {
+        override fun onCameraAvailable(cameraId: String) {
+            if (!running) return
+            if (synchronized(lock) { cameraDevice } != null) return
+            cameraHandler.removeCallbacks(openRunnable)
+            cameraHandler.post(openRunnable)
+        }
+    }
+
+    init {
+        runCatching {
+            context.getSystemService(CameraManager::class.java)?.registerAvailabilityCallback(
+                ContextCompat.getMainExecutor(context),
+                availabilityCallback,
+            )
+            availabilityRegistered = true
+        }
+    }
 
     fun setDetectionIntervalMs(intervalMs: Long) {
         detectionIntervalMs = intervalMs.coerceAtLeast(16L)
@@ -173,6 +200,13 @@ class CameraController(
 
     fun close() {
         stop()
+        if (availabilityRegistered) {
+            availabilityRegistered = false
+            runCatching {
+                context.getSystemService(CameraManager::class.java)
+                    ?.unregisterAvailabilityCallback(availabilityCallback)
+            }
+        }
         synchronized(poolLock) {
             previewPool = arrayOfNulls(PREVIEW_POOL_SIZE)
             previewInUse = BooleanArray(PREVIEW_POOL_SIZE)
@@ -340,6 +374,17 @@ class CameraController(
 
         override fun onError(camera: CameraDevice, error: Int) {
             camera.close()
+            if (error == ERROR_CAMERA_IN_USE || error == ERROR_MAX_CAMERAS_IN_USE) {
+                // Another client, typically system face unlock, owns the sensor.
+                // Wait for the availability callback instead of burning the fast
+                // retry budget on a camera that is legitimately busy.
+                closeHardware()
+                if (!running) return
+                listener.onCameraError("Camera is in use by another app", null)
+                cameraHandler.removeCallbacks(openRunnable)
+                cameraHandler.postDelayed(openRunnable, CAMERA_IN_USE_RETRY_MS)
+                return
+            }
             handleFailure("Camera device error $error")
         }
     }
@@ -568,5 +613,6 @@ class CameraController(
         private const val RETRY_BASE_MS = 500L
         private const val RETRY_MAX_MS = 8_000L
         private const val SLOW_RETRY_MS = 15_000L
+        private const val CAMERA_IN_USE_RETRY_MS = 1_500L
     }
 }

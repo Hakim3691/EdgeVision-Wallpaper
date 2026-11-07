@@ -8,11 +8,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Feature: biometric handover.
+ * Feature: lock-screen streaming.
  *
- * The wallpaper must never hold the camera while the keyguard is up, because that
- * starves face unlock. It must release the sensor as soon as the screen turns off
- * and resume only after the user actually unlocks.
+ * The wallpaper must keep streaming on an awake lock screen and only pause while
+ * the display is actually off. The keyguard is not a reason to freeze the camera:
+ * a locked screen still shows the wallpaper, and stopping there left a single
+ * static frame until an unlock broadcast that some unlock paths never send.
  */
 class CameraLifecycleGateSpec {
 
@@ -64,7 +65,7 @@ class CameraLifecycleGateSpec {
     }
 
     @Test
-    fun `screen on while locked does not take the camera from face unlock`() {
+    fun `the lock screen keeps streaming instead of freezing the last frame`() {
         val fixture = running()
         fixture.controller.onScreenStateChanged(interactive = false, keyguardLocked = false)
 
@@ -72,27 +73,7 @@ class CameraLifecycleGateSpec {
             fixture.controller.onScreenStateChanged(interactive = true, keyguardLocked = true)
         }
 
-        Then("the camera stays closed") {
-            assertEquals(
-                "the camera must not reopen behind the keyguard",
-                1,
-                fixture.camera.starts,
-            )
-            assertEquals(1, fixture.camera.stops)
-        }
-    }
-
-    @Test
-    fun `unlocking resumes the camera`() {
-        val fixture = running()
-        fixture.controller.onScreenStateChanged(interactive = false, keyguardLocked = false)
-        fixture.controller.onScreenStateChanged(interactive = true, keyguardLocked = true)
-
-        When("the user unlocks") {
-            fixture.controller.onScreenStateChanged(interactive = true, keyguardLocked = false)
-        }
-
-        Then("streaming resumes") {
+        Then("the camera comes back without waiting for an unlock broadcast") {
             assertEquals(2, fixture.camera.starts)
             assertEquals(2, fixture.inference.starts)
             assertTrue(fixture.controller.isRunning)
@@ -101,13 +82,48 @@ class CameraLifecycleGateSpec {
     }
 
     @Test
-    fun `surface creation while locked does not restart hardware`() {
+    fun `unlocking does not restart a pipeline that is already streaming`() {
         val fixture = running()
+        fixture.controller.onScreenStateChanged(interactive = false, keyguardLocked = false)
         fixture.controller.onScreenStateChanged(interactive = true, keyguardLocked = true)
-        fixture.controller.onVisibilityChanged(false)
-        fixture.controller.onSurfaceAvailabilityChanged(true)
 
-        assertEquals(1, fixture.camera.starts)
-        assertFalse(fixture.controller.isRunning)
+        When("the user unlocks") {
+            fixture.controller.onScreenStateChanged(interactive = true, keyguardLocked = false)
+        }
+
+        Then("the running session is left alone") {
+            assertEquals(2, fixture.camera.starts)
+            assertEquals(1, fixture.camera.stops)
+            assertTrue(fixture.controller.isRunning)
+        }
+    }
+
+    @Test
+    fun `surface recreation on the lock screen restarts hardware`() {
+        val fixture = running()
+        fixture.controller.onSurfaceAvailabilityChanged(false)
+        fixture.controller.onScreenStateChanged(interactive = true, keyguardLocked = true)
+
+        When("the surface is recreated on the lock screen") {
+            fixture.controller.onSurfaceAvailabilityChanged(true)
+        }
+
+        Then("the camera starts") {
+            assertTrue(fixture.controller.isRunning)
+            assertEquals(2, fixture.camera.starts)
+        }
+    }
+
+    @Test
+    fun `a keyguard report alone never stops an idle pipeline`() {
+        val camera = FakeResource()
+        val inference = FakeResource()
+        val controller = WallpaperEngineController(camera, inference)
+
+        controller.onScreenStateChanged(interactive = true, keyguardLocked = true)
+
+        assertEquals(0, camera.starts)
+        assertEquals(0, inference.starts)
+        assertFalse(controller.isRunning)
     }
 }

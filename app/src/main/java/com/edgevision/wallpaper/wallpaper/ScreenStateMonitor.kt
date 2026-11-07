@@ -5,16 +5,22 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import androidx.core.content.ContextCompat
 
 /**
  * Reports display interactivity and keyguard state.
  *
- * The previous revision resumed the camera on `ACTION_SCREEN_ON`, which fires for
- * the lock screen *before* the user unlocks. That immediately took the camera back
- * from face unlock. This monitor exposes the facts instead, and the lifecycle gate
- * only runs the camera when the screen is interactive **and** the keyguard is gone.
+ * `ACTION_USER_PRESENT` is not guaranteed on every unlock path: face unlock,
+ * "lift to wake" without a secure keyguard, and OEM skins can dismiss the keyguard
+ * without delivering it to a runtime receiver. Relying on that single broadcast is
+ * what left the wallpaper showing one frozen frame after unlock.
+ *
+ * Broadcasts are still the fast path, and a low-frequency poll is the safety net:
+ * it re-reads the real system state and only reports changes, so a missed event
+ * recovers within [POLL_INTERVAL_MS] instead of never.
  */
 class ScreenStateMonitor(
     private val context: Context,
@@ -23,11 +29,22 @@ class ScreenStateMonitor(
 
     private val power = context.getSystemService(PowerManager::class.java)
     private val keyguard = context.getSystemService(KeyguardManager::class.java)
+    private val handler = Handler(Looper.getMainLooper())
     private var registered = false
+    private var lastInteractive: Boolean? = null
+    private var lastLocked: Boolean? = null
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             emit()
+        }
+    }
+
+    private val poll = object : Runnable {
+        override fun run() {
+            if (!registered) return
+            emit()
+            handler.postDelayed(this, POLL_INTERVAL_MS)
         }
     }
 
@@ -46,6 +63,8 @@ class ScreenStateMonitor(
             registered = true
         }
         emit()
+        handler.removeCallbacks(poll)
+        handler.postDelayed(poll, POLL_INTERVAL_MS)
     }
 
     /** Re-reads the current state, e.g. when the wallpaper becomes visible. */
@@ -54,12 +73,20 @@ class ScreenStateMonitor(
     fun stop() {
         if (!registered) return
         registered = false
+        handler.removeCallbacks(poll)
         runCatching { context.applicationContext.unregisterReceiver(receiver) }
     }
 
     private fun emit() {
         val interactive = power?.isInteractive ?: true
         val locked = keyguard?.isKeyguardLocked == true
+        if (interactive == lastInteractive && locked == lastLocked) return
+        lastInteractive = interactive
+        lastLocked = locked
         onStateChanged(interactive, locked)
+    }
+
+    private companion object {
+        const val POLL_INTERVAL_MS = 1_500L
     }
 }

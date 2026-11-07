@@ -6,6 +6,26 @@ specifications" from "works on hardware". No feature is claimed on the strength 
 a class existing, and no latency figure is claimed at all: nothing in this
 environment can measure camera latency.
 
+## 1.4.1 — lock-screen streaming and unlock recovery
+
+- **The keyguard is no longer a gate.** Version 1.3.3 stopped the camera whenever
+  `isKeyguardLocked` was true, which is the entire lock screen, and relied on
+  `ACTION_USER_PRESENT` to start it again. That broadcast is not delivered on every
+  unlock path (face unlock, lift-to-wake without a secure keyguard, some OEM
+  skins), so the engine kept drawing its last frame: a static wallpaper.
+- **Streaming on the lock screen.** The gate now requires only visible + surface +
+  interactive. The pause therefore coincides with the biometric event itself: if
+  the system preempts the sensor, the session disconnects and
+  `CameraManager.AvailabilityCallback` reopens it as soon as the sensor is free.
+  `ERROR_CAMERA_IN_USE` waits for that callback instead of exhausting the retry
+  budget.
+- **Missed broadcasts self-heal.** `ScreenStateMonitor` keeps the broadcasts as a
+  fast path and polls the real power/keyguard state every 1.5 s, emitting only on
+  change.
+
+Verified: `:app:assembleDebug`, `:app:testDebugUnitTest` and `:app:assembleRelease`
+pass; `versionCode 6` / `versionName 1.4.1`.
+
 ## 1.3.3 — live view, biometric handover and detection continuity
 
 This revision supersedes the measurements below.
