@@ -30,6 +30,12 @@ class AssistSettings(context: Context) {
             prefs.edit().putBoolean(KEY_HAPTICS, value).apply()
         }
 
+    var overlayEnabled: Boolean
+        get() = prefs.getBoolean(KEY_OVERLAY_ENABLED, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_OVERLAY_ENABLED, value).apply()
+        }
+
     var overlayOpacityPercent: Int
         get() = prefs.getInt(KEY_OVERLAY_OPACITY, DEFAULT_OVERLAY_OPACITY)
             .coerceIn(MIN_OVERLAY_OPACITY, MAX_OVERLAY_OPACITY)
@@ -154,6 +160,7 @@ class AssistSettings(context: Context) {
         const val KEY_AI_DISCLOSURE_SEEN = "legal_ai_disclosure_seen"
         const val KEY_SAFETY_ACCEPTED = "legal_safety_accepted"
         const val KEY_POWER_NOTICE_DISMISSED = "power_notice_dismissed"
+        const val KEY_OVERLAY_ENABLED = "overlay_enabled"
 
         const val MIN_OVERLAY_OPACITY = 20
         const val MAX_OVERLAY_OPACITY = 100

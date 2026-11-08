@@ -338,6 +338,15 @@
                     android:textColor="@color/on_surface"
                     android:textSize="16sp" />
 
+                <com.google.android.material.switchmaterial.SwitchMaterial
+                    android:id="@+id/overlay_toggle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="48dp"
+                    android:text="@string/pass_through_overlay"
+                    android:textColor="@color/on_surface"
+                    android:textSize="16sp" />
+
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"

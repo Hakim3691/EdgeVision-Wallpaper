@@ -46,6 +46,7 @@
     <string name="capture_cooldown_value">%1$d s</string>
 
     <string name="performance_title">Detection cadence</string>
+    <string name="pass_through_overlay">Pass-Through Overlay</string>
     <string name="performance_description">Slower cadences use less battery. Detection always stays on.</string>
     <string name="performance_mode_automatic">Auto</string>
     <string name="performance_mode_battery_saver">Battery</string>
@@ -96,4 +97,5 @@
     <string name="usage_stats_permission_granted">Usage stats permission granted</string>
     <string name="usage_stats_permission_required">Usage stats permission required</string>
     <string name="camera_overlay_label">Camera Overlay</string>
+    <string name="camera_overlay_permission_needed">Camera overlay permission is required to display the see-through camera preview over other apps.\n\nGrant it in Settings → Apps → Android Clear → Draw over other apps.</string>
 </resources>

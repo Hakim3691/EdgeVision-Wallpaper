@@ -1,5 +1,7 @@
 package com.edgevision.wallpaper.wallpaper
 
+import com.edgevision.wallpaper.OverlayVisibilityManager
+
 interface EngineResource {
     fun start()
     fun stop()
@@ -64,6 +66,9 @@ class WallpaperEngineController(
     fun onVisibilityChanged(isVisible: Boolean) {
         if (destroyed) return
         visible = isVisible
+        // Broadcast visibility to the shared overlay manager so the ForegroundService
+        // can show/hide the pass-through camera overlay accordingly.
+        OverlayVisibilityManager.setState(isVisible)
         reconcile()
     }
 

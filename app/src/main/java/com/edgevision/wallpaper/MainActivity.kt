@@ -15,6 +15,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.app.usage.UsageStatsManager
+import android.Manifest.permission.SYSTEM_ALERT_WINDOW
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
@@ -55,6 +56,8 @@ class MainActivity : AppCompatActivity() {
     }
     private val foregroundServiceHandler = Handler(Looper.getMainLooper())
 
+    private val REQUEST_SYSTEM_ALERT = 1001
+
     private val requestCameraPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -68,6 +71,39 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.RequestPermission(),
     ) { refreshStatus() }
 
+    private val requestSystemAlertPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            Log.d("MainActivity", "SYSTEM_ALERT_WINDOW permission granted")
+        } else {
+            Log.w("MainActivity", "SYSTEM_ALERT_WINDOW permission denied")
+            showSystemAlertSettingsFallback()
+        }
+        refreshStatus()
+    }
+
+    private fun requestSystemAlertPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            // Pre-Marshmallow: permission is granted at install time
+            return
+        }
+        if (!Settings.canDrawOverlays(this)) {
+            requestSystemAlertPermission.launch(SYSTEM_ALERT_WINDOW)
+        }
+    }
+
+    private fun showSystemAlertSettingsFallback() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.camera_overlay_label)
+            .setMessage(R.string.camera_overlay_permission_needed)
+            .setPositiveButton(R.string.action_open_settings) { _, which ->
+                requestSystemAlertPermission.launch(SYSTEM_ALERT_WINDOW)
+            }
+            .setNegativeButton(R.string.action_cancel, null)
+            .show()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -79,6 +115,10 @@ class MainActivity : AppCompatActivity() {
         binding.switchHapticsEnabled.isChecked = settings.hapticsEnabled
         binding.sliderOpacity.value = settings.overlayOpacityPercent.toFloat()
         updateOpacityLabel(settings.overlayOpacityPercent)
+
+        // Pass-Through Overlay toggle state (persisted setting)
+        val overlayToggleChecked = settings.overlayEnabled
+        binding.overlayToggle.isChecked = overlayToggleChecked
 
         binding.switchBlindAssist.setOnCheckedChangeListener { _, checked ->
             settings.blindAssist = checked
@@ -117,8 +157,11 @@ class MainActivity : AppCompatActivity() {
         foregroundServiceConnection = object : ServiceConnection {
             // Note: className may be null in some test environments (Robolectric)
             // even though the Android interface declares it as non-null
+            // Note: ibinder may be null in Robolectric test environments
+            // Use safe as? cast to prevent NPE when ibinder is null
             override fun onServiceConnected(className: ComponentName?, ibinder: IBinder) {
-                foregroundServiceBinder = ibinder as CameraPreviewForegroundService.LocalBinder?
+                // Safe cast - returns null if ibinder is null instead of throwing NPE
+                foregroundServiceBinder = ibinder as? CameraPreviewForegroundService.LocalBinder
                 if (foregroundServiceBinder != null) {
                     Log.d("MainActivity", "Foreground service bound successfully")
                 }
@@ -129,6 +172,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
         bindService(Intent(this, CameraPreviewForegroundService::class.java), foregroundServiceConnection, Context.BIND_AUTO_CREATE)
+
+        // Request SYSTEM_ALERT_WINDOW permission for draw-over-other-apps functionality
+        requestSystemAlertPermissionIfNeeded()
 
         // Capture settings are read by the wallpaper engine; this screen only
         // persists them and shows the current values. Turning capture on for the
@@ -164,8 +210,21 @@ class MainActivity : AppCompatActivity() {
             if (isChecked) modeForButton(checkedId)?.let { settings.performanceMode = it }
         }
 
-        binding.btnAboutLegal.setOnClickListener {
-            startActivity(Intent(this, LegalActivity::class.java))
+        // Pass-Through Overlay toggle - separate from Live Wallpaper capture
+        binding.overlayToggle.setOnCheckedChangeListener { _, checked ->
+            if (checked) {
+                // Request SYSTEM_ALERT_WINDOW permission if needed, then start foreground service
+                requestSystemAlertPermissionIfNeeded()
+            } else {
+                // Stop the foreground overlay service
+                stopForegroundServiceIfRunning()
+            }
+        }
+
+        // Live Wallpaper intent trigger (separate from overlay)
+        binding.btnSetWallpaper.setOnClickListener {
+            // Launch wallpaper picker - distinct from overlay activation
+            openLiveWallpaperPicker()
         }
 
         updateBlindModeUi()
@@ -390,6 +449,17 @@ class MainActivity : AppCompatActivity() {
         if (foregroundServiceBinder != null) {
             unbindService(foregroundServiceConnection)
             foregroundServiceBinder = null
+        }
+    }
+
+    /** Stop the foreground overlay service if it's running. */
+    private fun stopForegroundServiceIfRunning() {
+        if (foregroundServiceBinder != null) {
+            unbindService(foregroundServiceConnection)
+            foregroundServiceBinder = null
+            stopService(Intent(this, CameraPreviewForegroundService::class.java))
+            foregroundServiceBinder = null
+            Log.d("MainActivity", "Foreground overlay service stopped")
         }
     }
 
